@@ -12,15 +12,17 @@ import urllib.error
 import urllib.request
 
 
-BUILD = Path("build/reports/build-convention/report.json")
-SEMGREP = Path("build/reports/semgrep/report.json")
-RESPONSE = Path("build/reports/risk-gate/response.json")
+WORKSPACE = Path(os.environ.get("GITHUB_WORKSPACE", Path.cwd())).resolve()
+RISK_GATE = Path(os.environ.get("RISK_GATE_PATH", Path(__file__).resolve().parents[2])).resolve()
+BUILD = WORKSPACE / "build/reports/build-convention/report.json"
+SEMGREP = WORKSPACE / "build/reports/semgrep/report.json"
+RESPONSE = WORKSPACE / "build/reports/risk-gate/response.json"
 
 
 def changes(base):
     raw = subprocess.check_output([
         "git", "diff", "--name-status", "-z", "--find-renames", f"origin/{base}...HEAD"
-    ]).split(b"\0")
+    ], cwd=WORKSPACE).split(b"\0")
     files = []
     index = 0
     while index < len(raw) - 1:
@@ -74,9 +76,9 @@ def main():
         "changedFiles": changes(os.environ["BASE_REF"]),
         "diff": subprocess.check_output([
             "git", "diff", "--binary", f"origin/{os.environ['BASE_REF']}...HEAD"
-        ]).decode("utf-8", errors="replace"),
+        ], cwd=WORKSPACE).decode("utf-8", errors="replace"),
     }
-    jars = [path for path in Path("build/libs").glob("*.jar") if not path.name.endswith("-plain.jar")]
+    jars = [path for path in (RISK_GATE / "build/libs").glob("*.jar") if not path.name.endswith("-plain.jar")]
     if len(jars) != 1:
         raise ValueError("Expected one Risk Gate boot jar")
     jar = jars[0]
