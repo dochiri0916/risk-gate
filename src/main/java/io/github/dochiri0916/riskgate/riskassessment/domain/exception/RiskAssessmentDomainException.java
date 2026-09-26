@@ -26,6 +26,17 @@ public final class RiskAssessmentDomainException extends DomainException {
         );
     }
 
+    public static RiskAssessmentDomainException invalidBuildConventionSchema(final String version) {
+        return new RiskAssessmentDomainException(
+                RiskAssessmentErrorCode.INVALID_BUILD_CONVENTION_SCHEMA,
+                Map.of("schemaVersion", version)
+        );
+    }
+
+    public static RiskAssessmentDomainException diffTooLarge() {
+        return new RiskAssessmentDomainException(RiskAssessmentErrorCode.DIFF_TOO_LARGE, Map.of());
+    }
+
     public static RiskAssessmentDomainException invalidPolicyConfiguration() {
         return new RiskAssessmentDomainException(RiskAssessmentErrorCode.INVALID_POLICY_CONFIGURATION, Map.of());
     }

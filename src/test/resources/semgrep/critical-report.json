@@ -1,0 +1,21 @@
+{
+  "results": [
+    {
+      "check_id": "security.sql-injection",
+      "path": "src/Order.java",
+      "start": {"line": 12, "col": 5, "offset": 135},
+      "end": {"line": 12, "col": 19, "offset": 149},
+      "extra": {
+        "message": "Avoid constructing SQL from untrusted input",
+        "metadata": {"category": "security"},
+        "severity": "CRITICAL",
+        "fingerprint": "example_0",
+        "lines": "execute(query)"
+      }
+    }
+  ],
+  "errors": [],
+  "paths": {"scanned": ["src/Order.java"]},
+  "skipped_rules": [],
+  "version": "1.45.0"
+}

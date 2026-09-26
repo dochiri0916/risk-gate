@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "1.0",
+  "pluginVersion": "1.0.1",
+  "status": "PASS",
+  "checks": {
+    "architecture": "PASS",
+    "archUnit": "PASS",
+    "checkstyle": "PASS",
+    "pmd": "PASS",
+    "spotBugs": "PASS",
+    "migration": "PASS",
+    "changedCodeCoverage": "PASS",
+    "coverageVerification": "PASS",
+    "tests": "PASS",
+    "compilation": "PASS",
+    "javaVersion": "PASS",
+    "conventionIntegrity": "PASS",
+    "mutationGate": "NOT_APPLIED",
+    "coverageReport": "PASS"
+  },
+  "coverage": {
+    "line": 0.75,
+    "branch": 0.5
+  },
+  "mutation": {
+    "enabled": false,
+    "score": null
+  }
+}

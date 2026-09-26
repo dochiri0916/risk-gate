@@ -5,6 +5,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -33,6 +34,20 @@ public final class GlobalExceptionHandler extends ResponseEntityExceptionHandler
             final HttpStatusCode status,
             final WebRequest request
     ) {
+        return createResponseEntity(invalidRequestProblem(), headers, HttpStatus.BAD_REQUEST, request);
+    }
+
+    @Override
+    protected ResponseEntity<Object> handleHttpMessageNotReadable(
+            final HttpMessageNotReadableException exception,
+            final HttpHeaders headers,
+            final HttpStatusCode status,
+            final WebRequest request
+    ) {
+        return createResponseEntity(invalidRequestProblem(), headers, HttpStatus.BAD_REQUEST, request);
+    }
+
+    private ProblemDetail invalidRequestProblem() {
         final ErrorCode errorCode = GlobalErrorCode.INVALID_REQUEST;
         final ProblemDetail problemDetail = ProblemDetail.forStatusAndDetail(
                 statusOf(errorCode.kind()),
@@ -40,7 +55,7 @@ public final class GlobalExceptionHandler extends ResponseEntityExceptionHandler
         );
         problemDetail.setTitle(errorCode.code());
         problemDetail.setProperty("code", errorCode.code());
-        return createResponseEntity(problemDetail, headers, statusOf(errorCode.kind()), request);
+        return problemDetail;
     }
 
     @ExceptionHandler(Exception.class)

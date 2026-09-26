@@ -1,5 +1,6 @@
 package io.github.dochiri0916.riskgate.riskassessment.domain.model;
 
+import io.github.dochiri0916.riskgate.riskassessment.domain.exception.RiskAssessmentDomainException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -10,8 +11,7 @@ public final class RiskPolicyService {
     public RiskPolicyService(final RiskScore blockThreshold, final RiskScore reviewThreshold) {
         if (blockThreshold == null || reviewThreshold == null
                 || reviewThreshold.value() >= blockThreshold.value()) {
-            throw io.github.dochiri0916.riskgate.riskassessment.domain.exception.RiskAssessmentDomainException
-                    .invalidPolicyConfiguration();
+            throw RiskAssessmentDomainException.invalidPolicyConfiguration();
         }
         this.blockThreshold = blockThreshold;
         this.reviewThreshold = reviewThreshold;
@@ -26,7 +26,7 @@ public final class RiskPolicyService {
             reasons.add(PolicyReason.SEMGREP_CRITICAL);
         }
         if (!reasons.isEmpty()) {
-            return result(RiskDecision.BLOCK, Math.max(input.score().value(), blockThreshold.value()), reasons);
+            return result(RiskDecision.BLOCK, input.score().value(), reasons);
         }
         if (input.score().value() >= blockThreshold.value()) {
             return result(RiskDecision.BLOCK, input.score().value(), List.of(PolicyReason.RISK_SCORE_BLOCK_THRESHOLD));

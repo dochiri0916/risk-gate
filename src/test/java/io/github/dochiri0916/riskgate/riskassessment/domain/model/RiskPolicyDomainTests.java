@@ -69,7 +69,7 @@ class RiskPolicyDomainTests {
 
         // then
         assertEquals(RiskDecision.BLOCK, result.decision(), "컨벤션 실패는 항상 BLOCK 판정이다");
-        assertEquals(90, result.score().value(), "hard gate 점수는 block 임계값을 반영한다");
+        assertEquals(0, result.score().value(), "Analyzer 점수를 그대로 보존한다");
         assertEquals(List.of(PolicyReason.BUILD_CONVENTION_FAILED), result.reasons().values(), "판정 사유를 반환한다");
     }
 
@@ -84,6 +84,8 @@ class RiskPolicyDomainTests {
 
         // then
         assertEquals(RiskDecision.BLOCK, result.decision(), "critical Semgrep은 점수와 무관하게 BLOCK 한다");
+        assertEquals(15, result.score().value(), "Analyzer 점수를 그대로 보존한다");
+        assertEquals(List.of(PolicyReason.SEMGREP_CRITICAL), result.reasons().values(), "판정 사유를 반환한다");
     }
 
     @Test
@@ -157,6 +159,22 @@ class RiskPolicyDomainTests {
 
         // then
         assertEquals("RISK-ASSESSMENT-003", exception.errorCode().code(), "임계값 순서 위반을 정책 설정 오류로 분류한다");
+    }
+
+    @Test
+    @DisplayName("review 임계값이 block 임계값과 같으면 정책 설정 오류다")
+    void rejectEqualThresholds() {
+        // given
+        final RiskScore threshold = new RiskScore(70);
+
+        // when
+        final RiskAssessmentDomainException exception = assertThrows(
+                RiskAssessmentDomainException.class,
+                () -> new RiskPolicyService(threshold, threshold)
+        );
+
+        // then
+        assertEquals("RISK-ASSESSMENT-003", exception.errorCode().code(), "동일한 임계값을 거부한다");
     }
 
     @Test

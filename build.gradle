@@ -2,7 +2,7 @@ plugins {
     id 'java'
     id 'org.springframework.boot' version '4.1.1'
     id 'io.spring.dependency-management' version '1.1.7'
-    id 'com.dochiri.lint-convention' version '1.0.0'
+    id 'io.github.dochiri0916.build-convention'
 }
 
 group = 'io.github.dochiri0916'

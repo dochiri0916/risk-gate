@@ -1,3 +1,5 @@
 spring:
   application:
     name: risk-gate
+risk-assessment:
+  max-diff-length: 262144

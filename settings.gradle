@@ -1,4 +1,6 @@
 pluginManagement {
+    includeBuild(System.getenv('BUILD_CONVENTION_DIR') ?: '/Users/seongbin/programming/utility/build-convention')
+
     repositories {
         mavenLocal()
         gradlePluginPortal()

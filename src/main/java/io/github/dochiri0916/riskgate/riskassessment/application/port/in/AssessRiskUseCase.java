@@ -3,6 +3,7 @@ package io.github.dochiri0916.riskgate.riskassessment.application.port.in;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskCategory;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskDecision;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskSeverity;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
 
@@ -43,14 +44,16 @@ public interface AssessRiskUseCase {
             String repository,
             String commitSha,
             Integer pullRequestNumber,
-            List<Check> checks,
+            BuildConventionReport buildConventionReport,
+            SemgrepReport semgrepReport,
             List<FindingInput> findings,
-            List<ChangedFile> changedFiles
+            List<ChangedFile> changedFiles,
+            String diff
     ) {
         public AssessRiskCommand {
-            checks = List.copyOf(checks);
             findings = List.copyOf(findings);
             changedFiles = List.copyOf(changedFiles);
+
         }
 
         public record FindingInput(
@@ -66,6 +69,31 @@ public interface AssessRiskUseCase {
         }
 
         public record Check(String tool, String name, String status) { }
+        public record BuildConventionReport(
+                String schemaVersion,
+                String pluginVersion,
+                String status,
+                List<Check> checks,
+                Coverage coverage,
+                Mutation mutation
+        ) {
+            public BuildConventionReport {
+                checks = List.copyOf(checks);
+            }
+        }
+        public record Coverage(BigDecimal line, BigDecimal branch) { }
+        public record Mutation(boolean enabled, BigDecimal score) { }
+        public record SemgrepReport(List<SemgrepFinding> results) {
+            public SemgrepReport {
+                results = List.copyOf(results);
+            }
+        }
+        public record SemgrepFinding(RiskSeverity severity, String ruleId, String path, int line, String message) { }
+        @Override
+        public String toString() {
+            return "AssessRiskCommand[diff=<redacted>]";
+        }
+
         public record ChangedFile(String path, String changeType) { }
     }
 }
