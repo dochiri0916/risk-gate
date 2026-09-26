@@ -3,9 +3,18 @@ name: Risk Gate
 on:
   pull_request:
   workflow_call:
+    inputs:
+      base-branch:
+        type: string
+        default: main
 
 permissions:
   contents: read
+  pull-requests: write
+
+concurrency:
+  group: risk-gate-${{ github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   assess:
@@ -33,6 +42,18 @@ jobs:
           repository: dochiri0916/risk-gate
           path: .risk-gate
 
+      - name: Resolve PR context
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          BASE_BRANCH: ${{ inputs.base-branch || 'main' }}
+          EVENT_PATH: ${{ github.event_path }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 .risk-gate/scripts/ci/pr_context.py
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -49,7 +70,7 @@ jobs:
           set +e
 
           ./gradlew check \
-            -PchangedCoverageBaseRef="origin/${{ github.base_ref }}"
+            -PchangedCoverageBaseRef="origin/${{ steps.pr.outputs.BASE_REF }}"
 
           code=$?
 
@@ -95,10 +116,10 @@ jobs:
 
       - name: Risk Gate
         env:
-          BASE_REF: ${{ github.base_ref }}
+          BASE_REF: ${{ steps.pr.outputs.BASE_REF }}
           REPOSITORY: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ steps.pr.outputs.HEAD_SHA }}
+          PR_NUMBER: ${{ steps.pr.outputs.PR_NUMBER }}
           BUILD_EXIT: ${{ steps.build.outputs.exit_code }}
           SEMGREP_EXIT: ${{ steps.semgrep.outputs.exit_code }}
         run: python3 .risk-gate/scripts/ci/risk_gate.py
