@@ -1,8 +1,10 @@
 pluginManagement {
-    includeBuild(System.getenv('BUILD_CONVENTION_DIR') ?: '/Users/seongbin/programming/utility/build-convention')
+    def buildConventionPath = System.getenv('BUILD_CONVENTION_PATH')
+            ?: '/Users/seongbin/programming/utility/build-convention'
+
+    includeBuild(buildConventionPath)
 
     repositories {
-        mavenLocal()
         gradlePluginPortal()
         mavenCentral()
     }
