@@ -1,0 +1,235 @@
+package io.github.dochiri0916.riskgate.riskassessment.domain.model;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import io.github.dochiri0916.riskgate.riskassessment.domain.exception.RiskAssessmentDomainException;
+import java.util.Arrays;
+import java.util.List;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+class RiskPolicyDomainTests {
+    private final RiskPolicyService riskPolicyService = new RiskPolicyService(new RiskScore(90), new RiskScore(70));
+
+    @Test
+    @DisplayName("0부터 100까지의 점수는 유효하다")
+    void acceptScoreBounds() {
+        // given
+        final List<Integer> boundaryScores = List.of(0, 100);
+
+        // when
+        final List<Integer> acceptedScores = boundaryScores.stream().map(RiskScore::new)
+                .map(RiskScore::value).toList();
+
+        // then
+        assertEquals(boundaryScores, acceptedScores, "유효한 점수는 입력값을 그대로 보존한다");
+    }
+
+    @Test
+    @DisplayName("0 미만 점수는 Domain ErrorCode와 함께 거부한다")
+    void rejectNegativeScore() {
+        // given
+        final int invalidScore = -1;
+
+        // when
+        final RiskAssessmentDomainException exception = assertThrows(
+                RiskAssessmentDomainException.class,
+                () -> new RiskScore(invalidScore)
+        );
+
+        // then
+        assertEquals("RISK-ASSESSMENT-002", exception.errorCode().code(), "점수 범위 오류는 안정된 ErrorCode를 쓴다");
+    }
+
+    @Test
+    @DisplayName("100 초과 점수는 Domain ErrorCode와 함께 거부한다")
+    void rejectScoreAboveMaximum() {
+        // given
+        final int invalidScore = 101;
+
+        // when
+        final RiskAssessmentDomainException exception = assertThrows(
+                RiskAssessmentDomainException.class,
+                () -> new RiskScore(invalidScore)
+        );
+
+        // then
+        assertEquals("RISK-ASSESSMENT-002", exception.errorCode().code(), "최대 초과 점수도 같은 ErrorCode를 쓴다");
+    }
+
+    @Test
+    @DisplayName("build-convention 실패는 점수가 낮아도 BLOCK 한다")
+    void blockWhenConventionFails() {
+        // given
+        final RiskPolicyInput input = input(0, List.of(PolicySignal.BUILD_CONVENTION_FAILED));
+
+        // when
+        final RiskPolicyResult result = riskPolicyService.evaluate(input);
+
+        // then
+        assertEquals(RiskDecision.BLOCK, result.decision(), "컨벤션 실패는 항상 BLOCK 판정이다");
+        assertEquals(90, result.score().value(), "hard gate 점수는 block 임계값을 반영한다");
+        assertEquals(List.of(PolicyReason.BUILD_CONVENTION_FAILED), result.reasons().values(), "판정 사유를 반환한다");
+    }
+
+    @Test
+    @DisplayName("critical Semgrep 신호는 BLOCK 한다")
+    void blockWhenSemgrepIsCritical() {
+        // given
+        final RiskPolicyInput input = input(15, List.of(PolicySignal.SEMGREP_CRITICAL));
+
+        // when
+        final RiskPolicyResult result = riskPolicyService.evaluate(input);
+
+        // then
+        assertEquals(RiskDecision.BLOCK, result.decision(), "critical Semgrep은 점수와 무관하게 BLOCK 한다");
+    }
+
+    @Test
+    @DisplayName("두 hard gate 신호는 판정 이유에 모두 남긴다")
+    void preserveEveryHardGateReason() {
+        // given
+        final List<PolicySignal> signals = List.of(
+                PolicySignal.BUILD_CONVENTION_FAILED,
+                PolicySignal.SEMGREP_CRITICAL
+        );
+
+        // when
+        final RiskPolicyResult result = riskPolicyService.evaluate(input(100, signals));
+
+        // then
+        assertEquals(2, result.reasons().values().size(), "복수 hard gate 이유를 모두 보존한다");
+    }
+
+    @Test
+    @DisplayName("점수 70부터 89까지 REVIEW 하고 90부터 BLOCK 한다")
+    void applyScoreThresholds() {
+        // given
+        final RiskPolicyResult review = riskPolicyService.evaluate(input(70, List.of()));
+        final RiskPolicyResult block = riskPolicyService.evaluate(input(90, List.of()));
+
+        // when
+        final List<RiskDecision> decisions = List.of(review.decision(), block.decision());
+
+        // then
+        assertEquals(List.of(RiskDecision.REVIEW, RiskDecision.BLOCK), decisions, "임계값 경계에 맞게 판정한다");
+    }
+
+    @Test
+    @DisplayName("점수 89는 review 임계값에 따라 REVIEW 한다")
+    void reviewBelowBlockThreshold() {
+        // given
+        final RiskPolicyInput input = input(89, List.of());
+
+        // when
+        final RiskPolicyResult result = riskPolicyService.evaluate(input);
+
+        // then
+        assertEquals(RiskDecision.REVIEW, result.decision(), "block 임계값 바로 아래는 REVIEW 한다");
+    }
+
+    @Test
+    @DisplayName("점수 69는 PASS 한다")
+    void passBelowReviewThreshold() {
+        // given
+        final RiskPolicyInput input = input(69, List.of());
+
+        // when
+        final RiskPolicyResult result = riskPolicyService.evaluate(input);
+
+        // then
+        assertEquals(RiskDecision.PASS, result.decision(), "review 임계값보다 낮은 점수는 PASS 한다");
+    }
+
+    @Test
+    @DisplayName("review 임계값은 block 임계값보다 낮아야 한다")
+    void rejectInvalidThresholdOrder() {
+        // given
+        final RiskScore blockThreshold = new RiskScore(70);
+        final RiskScore reviewThreshold = new RiskScore(90);
+
+        // when
+        final RiskAssessmentDomainException exception = assertThrows(
+                RiskAssessmentDomainException.class,
+                () -> new RiskPolicyService(blockThreshold, reviewThreshold)
+        );
+
+        // then
+        assertEquals("RISK-ASSESSMENT-003", exception.errorCode().code(), "임계값 순서 위반을 정책 설정 오류로 분류한다");
+    }
+
+    @Test
+    @DisplayName("누락된 block 임계값은 정책 설정 오류다")
+    void rejectMissingBlockThreshold() {
+        // given
+        final RiskScore reviewThreshold = new RiskScore(70);
+
+        // when
+        final RiskAssessmentDomainException exception = assertThrows(
+                RiskAssessmentDomainException.class,
+                () -> new RiskPolicyService(null, reviewThreshold)
+        );
+
+        // then
+        assertEquals("RISK-ASSESSMENT-003", exception.errorCode().code(), "누락된 block 임계값을 거부한다");
+    }
+
+    @Test
+    @DisplayName("누락된 review 임계값은 정책 설정 오류다")
+    void rejectMissingReviewThreshold() {
+        // given
+        final RiskScore blockThreshold = new RiskScore(90);
+
+        // when
+        final RiskAssessmentDomainException exception = assertThrows(
+                RiskAssessmentDomainException.class,
+                () -> new RiskPolicyService(blockThreshold, null)
+        );
+
+        // then
+        assertEquals("RISK-ASSESSMENT-003", exception.errorCode().code(), "누락된 review 임계값을 거부한다");
+    }
+
+    @Test
+    @DisplayName("잘못된 정책 모델 구성은 같은 정책 입력 ErrorCode를 반환한다")
+    void rejectNullPolicyComponents() {
+        // given
+        final RiskScore score = new RiskScore(10);
+        final PolicySignals signals = new PolicySignals(List.of());
+        final PolicyReasons reasons = new PolicyReasons(List.of());
+        final List<PolicySignal> nullSignals = Arrays.asList((PolicySignal) null);
+        final List<PolicyReason> nullReasons = Arrays.asList((PolicyReason) null);
+
+        // when
+        final List<RiskAssessmentDomainException> exceptions = List.of(
+                assertThrows(RiskAssessmentDomainException.class, () -> new PolicySignals(null)),
+                assertThrows(RiskAssessmentDomainException.class, () -> new PolicySignals(nullSignals)),
+                assertThrows(RiskAssessmentDomainException.class, () -> new PolicyReasons(null)),
+                assertThrows(RiskAssessmentDomainException.class, () -> new PolicyReasons(nullReasons)),
+                assertThrows(RiskAssessmentDomainException.class, () -> new RiskPolicyInput(null, signals)),
+                assertThrows(RiskAssessmentDomainException.class, () -> new RiskPolicyInput(score, null)),
+                assertThrows(RiskAssessmentDomainException.class, () -> new RiskPolicyResult(null, score, reasons)),
+                assertThrows(
+                        RiskAssessmentDomainException.class,
+                        () -> new RiskPolicyResult(RiskDecision.PASS, null, reasons)
+                ),
+                assertThrows(
+                        RiskAssessmentDomainException.class,
+                        () -> new RiskPolicyResult(RiskDecision.PASS, score, null)
+                )
+        );
+
+        // then
+        assertEquals(9, exceptions.size(), "모든 null 구성 요소를 Domain 예외로 거부한다");
+        assertEquals(
+                true,
+                exceptions.stream().allMatch(exception -> "RISK-ASSESSMENT-004".equals(exception.errorCode().code())),
+                "정책 모델의 잘못된 입력은 안정된 ErrorCode를 사용한다"
+        );
+    }
+
+    private RiskPolicyInput input(final int score, final List<PolicySignal> signals) {
+        return new RiskPolicyInput(new RiskScore(score), new PolicySignals(signals));
+    }
+}
