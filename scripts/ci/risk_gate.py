@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 import time
 import traceback
 import urllib.error
@@ -47,7 +46,9 @@ def read_json(path: Path, label: str) -> dict:
         )
 
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(
+            path.read_text(encoding="utf-8")
+        )
     except json.JSONDecodeError as error:
         raise ValueError(
             f"{label} contains invalid JSON: {path}"
@@ -136,7 +137,9 @@ def write_summary(
     build_state: str | None = None,
     semgrep_state: str | None = None,
 ):
-    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    summary_path = os.environ.get(
+        "GITHUB_STEP_SUMMARY"
+    )
 
     if not summary_path:
         return
@@ -147,7 +150,9 @@ def write_summary(
     ]
 
     if score is not None:
-        lines.append(f"Risk Score: {score}")
+        lines.append(
+            f"Risk Score: {score}"
+        )
 
     if reasons:
         lines.append("Reasons:")
@@ -171,7 +176,9 @@ def write_summary(
         "a",
         encoding="utf-8",
     ) as output:
-        output.write("\n\n".join(lines))
+        output.write(
+            "\n\n".join(lines)
+        )
         output.write("\n")
 
 
@@ -183,7 +190,8 @@ def validate_build_report(
 
     if status not in ("PASS", "FAIL"):
         raise ValueError(
-            f"Invalid Build Convention status: {status!r}"
+            "Invalid Build Convention status: "
+            f"{status!r}"
         )
 
     exit_passed = build_exit == 0
@@ -213,12 +221,41 @@ def validate_semgrep_report(
             "a valid results array"
         )
 
-    errors = semgrep.get("errors")
+    errors = semgrep.get("errors") or []
 
-    if errors:
+    if not isinstance(errors, list):
         raise ValueError(
-            "Semgrep report contains analysis errors "
-            f"(count: {len(errors)})"
+            "Semgrep report contains "
+            "an invalid errors field"
+        )
+
+    fatal_errors = []
+
+    for error in errors:
+        if not isinstance(error, dict):
+            fatal_errors.append(error)
+            continue
+
+        level = str(
+            error.get("level", "")
+        ).lower()
+
+        # Semgrep can report non-fatal parsing warnings
+        # inside the errors array.
+        if level in (
+            "warn",
+            "warning",
+            "info",
+        ):
+            continue
+
+        fatal_errors.append(error)
+
+    if fatal_errors:
+        raise ValueError(
+            "Semgrep report contains fatal "
+            "analysis errors "
+            f"(count: {len(fatal_errors)})"
         )
 
 
@@ -227,7 +264,8 @@ def find_boot_jar() -> Path:
 
     if not libs.exists():
         raise FileNotFoundError(
-            f"Risk Gate build/libs does not exist: {libs}"
+            "Risk Gate build/libs does not exist: "
+            f"{libs}"
         )
 
     jars = sorted(
@@ -237,7 +275,10 @@ def find_boot_jar() -> Path:
     )
 
     if len(jars) != 1:
-        names = [path.name for path in jars]
+        names = [
+            path.name
+            for path in jars
+        ]
 
         raise ValueError(
             "Expected exactly one Risk Gate boot jar, "
@@ -247,7 +288,9 @@ def find_boot_jar() -> Path:
     return jars[0]
 
 
-def wait_until_ready(process: subprocess.Popen):
+def wait_until_ready(
+    process: subprocess.Popen,
+):
     health_url = (
         f"{RISK_GATE_BASE_URL}/actuator/health"
     )
@@ -257,7 +300,8 @@ def wait_until_ready(process: subprocess.Popen):
 
         if return_code is not None:
             raise RuntimeError(
-                "Risk Gate process exited before readiness "
+                "Risk Gate process exited "
+                "before readiness "
                 f"(exit code: {return_code})"
             )
 
@@ -280,7 +324,9 @@ def wait_until_ready(process: subprocess.Popen):
     )
 
 
-def call_risk_gate(request_body: dict) -> dict:
+def call_risk_gate(
+    request_body: dict,
+) -> dict:
     endpoint = (
         f"{RISK_GATE_BASE_URL}"
         "/api/v1/risk-assessments"
@@ -307,13 +353,12 @@ def call_risk_gate(request_body: dict) -> dict:
             return json.load(result)
 
     except urllib.error.HTTPError as error:
-        # Do not print request body or raw diff.
         response_body = error.read().decode(
             "utf-8",
             errors="replace",
         )
 
-        # Limit response output in CI.
+        # Do not expose an unbounded response in CI.
         response_body = response_body[:2000]
 
         raise RuntimeError(
@@ -323,7 +368,9 @@ def call_risk_gate(request_body: dict) -> dict:
         ) from error
 
 
-def run_risk_gate(request_body: dict) -> dict:
+def run_risk_gate(
+    request_body: dict,
+) -> dict:
     jar = find_boot_jar()
 
     process = subprocess.Popen(
@@ -349,7 +396,9 @@ def run_risk_gate(request_body: dict) -> dict:
             process.terminate()
 
             try:
-                process.wait(timeout=10)
+                process.wait(
+                    timeout=10
+                )
 
             except subprocess.TimeoutExpired:
                 process.kill()
@@ -365,7 +414,9 @@ def main() -> int:
         os.environ["SEMGREP_EXIT"]
     )
 
-    base_ref = os.environ["BASE_REF"]
+    base_ref = os.environ[
+        "BASE_REF"
+    ]
 
     build = read_json(
         BUILD_REPORT,
@@ -397,8 +448,12 @@ def main() -> int:
 
     request_body = {
         "reportVersion": "1",
-        "repository": os.environ["REPOSITORY"],
-        "commitSha": os.environ["HEAD_SHA"],
+        "repository": os.environ[
+            "REPOSITORY"
+        ],
+        "commitSha": os.environ[
+            "HEAD_SHA"
+        ],
         "pullRequestNumber": int(
             os.environ["PR_NUMBER"]
         ),
@@ -437,7 +492,8 @@ def main() -> int:
         "BLOCK",
     ):
         raise ValueError(
-            f"Invalid Risk Gate decision: {decision!r}"
+            "Invalid Risk Gate decision: "
+            f"{decision!r}"
         )
 
     write_summary(
@@ -448,7 +504,9 @@ def main() -> int:
         ),
         decision=decision,
         score=response.get("score"),
-        reasons=response.get("reasonCodes"),
+        reasons=response.get(
+            "reasonCodes"
+        ),
         build_state=build_state,
         semgrep_state="PASS",
     )
@@ -468,23 +526,31 @@ def main() -> int:
             f"Risk Gate returned {decision}"
         )
 
-    return 1 if decision == "BLOCK" else 0
+    return (
+        1
+        if decision == "BLOCK"
+        else 0
+    )
 
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        sys.exit(
+            main()
+        )
 
     except Exception as error:
-        error_type = type(error).__name__
+        error_type = type(
+            error
+        ).__name__
 
         write_summary(
-            f"Assessment failed: "
-            f"{error_type}: {error}",
+            "Assessment failed: "
+            f"{error_type}: {error}"
         )
 
         print(
-            f"Risk Gate failed: "
+            "Risk Gate failed: "
             f"{error_type}: {error}",
             file=sys.stderr,
         )

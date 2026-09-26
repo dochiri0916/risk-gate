@@ -13,46 +13,79 @@ jobs:
     env:
       BUILD_CONVENTION_PATH: ${{ github.workspace }}/build-convention
       RISK_GATE_PATH: ${{ github.workspace }}/.risk-gate
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/checkout@v4
+
+      - name: Checkout Build Convention
+        uses: actions/checkout@v4
         with:
           repository: dochiri0916/build-convention
           path: build-convention
-      - uses: actions/checkout@v4
+
+      - name: Checkout Risk Gate
+        uses: actions/checkout@v4
         with:
           repository: dochiri0916/risk-gate
           path: .risk-gate
-      - uses: actions/setup-java@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
-      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
       - name: Build Convention
         id: build
         shell: bash
         run: |
           set +e
-          ./gradlew check -PchangedCoverageBaseRef="origin/${{ github.base_ref }}"
+
+          ./gradlew check \
+            -PchangedCoverageBaseRef="origin/${{ github.base_ref }}"
+
           code=$?
+
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
           exit 0
+
       - name: Semgrep
         id: semgrep
         shell: bash
         run: |
           python3 -m pip install semgrep
+
           mkdir -p build/reports/semgrep
+
           set +e
-          semgrep scan --config auto --exclude build-convention --exclude .risk-gate --json --output build/reports/semgrep/report.json .
+
+          semgrep scan \
+            --config auto \
+            --exclude build-convention \
+            --exclude .risk-gate \
+            --exclude gradlew \
+            --exclude gradlew.bat \
+            --json \
+            --output build/reports/semgrep/report.json \
+            .
+
           code=$?
+
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+
           exit 0
+
       - name: Package Risk Gate
         working-directory: .risk-gate
         run: ./gradlew bootJar
+
       - name: Risk Gate
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -62,6 +95,7 @@ jobs:
           BUILD_EXIT: ${{ steps.build.outputs.exit_code }}
           SEMGREP_EXIT: ${{ steps.semgrep.outputs.exit_code }}
         run: python3 .risk-gate/scripts/ci/risk_gate.py
+
       - name: Reports
         if: always()
         uses: actions/upload-artifact@v4
