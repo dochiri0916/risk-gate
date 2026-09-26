@@ -10,6 +10,7 @@ permissions:
 jobs:
   assess:
     runs-on: ubuntu-latest
+
     env:
       BUILD_CONVENTION_PATH: ${{ github.workspace }}/build-convention
       RISK_GATE_PATH: ${{ github.workspace }}/.risk-gate
@@ -64,10 +65,16 @@ jobs:
 
           mkdir -p build/reports/semgrep
 
+          configs=(--config auto)
+
+          if [[ -f .semgrep.yml ]]; then
+            configs+=(--config .semgrep.yml)
+          fi
+
           set +e
 
           semgrep scan \
-            --config auto \
+            "${configs[@]}" \
             --exclude build-convention \
             --exclude .risk-gate \
             --exclude gradlew \
