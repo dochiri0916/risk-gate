@@ -50,11 +50,13 @@ public final class AssessRiskService implements AssessRiskUseCase {
                         finding.category(), finding.severity(), finding.source(), finding.summary(), finding.evidence()
                 ))
                 .toList());
-        command.semgrepReport().results().forEach(result -> analyzerFindings.add(new Finding(
-                io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskCategory.SECURITY,
-                result.severity(), "SEMGREP", result.message(),
-                result.ruleId() + " at " + result.path() + ":" + result.line()
-        )));
+        if (command.semgrepReport() != null) {
+            command.semgrepReport().results().forEach(result -> analyzerFindings.add(new Finding(
+                    io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskCategory.SECURITY,
+                    result.severity(), "SEMGREP", result.message(),
+                    result.ruleId() + " at " + result.path() + ":" + result.line()
+            )));
+        }
         final AnalysisRequest request = new AnalysisRequest(analyzerFindings, command.changedFiles(), command.diff());
         final Analysis analysis = riskAnalyzerPort.analyze(request);
         final RiskPolicyResult policyResult = riskPolicyService.evaluate(
@@ -83,8 +85,9 @@ public final class AssessRiskService implements AssessRiskUseCase {
     private PolicySignals signalsFor(final AssessRiskCommand command) {
         final List<PolicySignal> signals = new ArrayList<>();
         final boolean conventionFailed = "FAIL".equals(command.buildConventionReport().status());
-        final boolean criticalSemgrepFinding = command.semgrepReport().results().stream()
-                .anyMatch(finding -> RiskSeverity.CRITICAL == finding.severity());
+        final boolean criticalSemgrepFinding = command.semgrepReport() != null
+                && command.semgrepReport().results().stream()
+                        .anyMatch(finding -> RiskSeverity.CRITICAL == finding.severity());
         if (conventionFailed) {
             signals.add(PolicySignal.BUILD_CONVENTION_FAILED);
         }

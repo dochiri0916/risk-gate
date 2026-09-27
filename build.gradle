@@ -9,6 +9,10 @@ group = 'io.github.dochiri0916'
 version = '0.0.1-SNAPSHOT'
 description = 'risk-gate'
 
+springBoot {
+    mainClass = 'io.github.dochiri0916.riskgate.LocalRiskGateApplication'
+}
+
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(21)
