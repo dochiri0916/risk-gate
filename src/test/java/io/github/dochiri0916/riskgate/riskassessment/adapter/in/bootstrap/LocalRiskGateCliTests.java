@@ -6,8 +6,12 @@ import tools.jackson.databind.ObjectMapper;
 import io.github.dochiri0916.riskgate.riskassessment.application.port.in.AssessRiskUseCase;
 import io.github.dochiri0916.riskgate.riskassessment.application.service.AssessRiskService;
 import io.github.dochiri0916.riskgate.riskassessment.adapter.out.analysis.DeterministicRiskAnalyzerAdapter;
+import io.github.dochiri0916.riskgate.riskassessment.application.port.out.SecurityRiskAssessmentPort.FailureKind;
+import io.github.dochiri0916.riskgate.riskassessment.application.port.out.SecurityRiskAssessmentPort.SecurityRiskAssessmentException;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskPolicyService;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskScore;
+import io.github.dochiri0916.riskgate.riskassessment.domain.model.JevAssessment;
+import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskProbability;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
@@ -72,7 +76,55 @@ class LocalRiskGateCliTests {
         assertThat(result.path("findings")).isEmpty();
         assertThat(result.path("semgrep").asText()).isEqualTo("NOT_RUN");
         assertThat(result.path("semgrep").asText()).isNotEqualTo("PASS");
+        assertThat(result.path("jev").path("status").asText()).isEqualTo("NOT_RUN");
         assertThat(stderr.size()).isZero();
+    }
+
+    @Test
+    @DisplayName("Jev 활성 상태의 provider 오류는 PASS가 아닌 ERROR JSON과 exit code를 반환한다")
+    void jevProviderFailureReturnsStructuredErrorWithoutPassing() throws IOException {
+        // given
+        cli = new LocalRiskGateCli(service(), new PrintStream(stdout, true, StandardCharsets.UTF_8),
+                new PrintStream(stderr, true, StandardCharsets.UTF_8), true);
+        write("src/Main.java", "class Main { int value() { return 2; } }\n");
+
+        // when
+        final int exit = cli.run(args());
+
+        // then
+        assertThat(exit).isEqualTo(4);
+        final var result = new ObjectMapper().readTree(stdout.toString(StandardCharsets.UTF_8));
+        assertThat(result.path("decision").asText()).isEqualTo("ERROR");
+        assertThat(result.path("decision").asText()).isNotEqualTo("PASS");
+        assertThat(result.path("reasonCodes").get(0).asText()).isEqualTo("JEV_ANALYSIS_FAILED");
+        assertThat(result.path("jev").path("status").asText()).isEqualTo("ERROR");
+        assertThat(result.path("jev").path("failureKind").asText()).isEqualTo("CONFIGURATION_ERROR");
+    }
+
+    @Test
+    @DisplayName("Jev 분석 성공 시 확률과 semantic REVIEW 사유를 JSON으로 반환한다")
+    void enabledJevReturnsStructuredProbabilities() throws IOException {
+        // given
+        final JevAssessment assessment = new JevAssessment(
+                new RiskProbability(0.12), new RiskProbability(0.91),
+                new RiskProbability(0.2), new RiskProbability(0.18));
+        final var jevService = new AssessRiskService(new DeterministicRiskAnalyzerAdapter(),
+                new RiskPolicyService(new RiskScore(90), new RiskScore(70)), () -> Integer.MAX_VALUE,
+                context -> assessment);
+        cli = new LocalRiskGateCli(jevService, new PrintStream(stdout, true, StandardCharsets.UTF_8),
+                new PrintStream(stderr, true, StandardCharsets.UTF_8), true);
+        write("src/Main.java", "class Main { int value() { return 2; } }\n");
+
+        // when
+        final int exit = cli.run(args());
+
+        // then
+        assertThat(exit).isEqualTo(2);
+        final var result = new ObjectMapper().readTree(stdout.toString(StandardCharsets.UTF_8));
+        assertThat(result.path("decision").asText()).isEqualTo("REVIEW");
+        assertThat(result.path("reasonCodes").get(0).asText()).isEqualTo("HIGH_AUTHORIZATION_RISK");
+        assertThat(result.path("jev").path("status").asText()).isEqualTo("PASS");
+        assertThat(result.path("jev").path("authorizationRisk").asDouble()).isEqualTo(0.91);
     }
 
     @Test
@@ -334,7 +386,8 @@ class LocalRiskGateCliTests {
         // given
         write("src/Main.java", "class Main { int value() { return 2; } }\n");
         final var limitedService = new AssessRiskService(new DeterministicRiskAnalyzerAdapter(),
-                new RiskPolicyService(new RiskScore(90), new RiskScore(70)), () -> 1);
+                new RiskPolicyService(new RiskScore(90), new RiskScore(70)), () -> 1,
+                context -> { throw new AssertionError("Jev is disabled by default"); });
         cli = new LocalRiskGateCli(limitedService, new PrintStream(stdout, true, StandardCharsets.UTF_8),
                 new PrintStream(stderr, true, StandardCharsets.UTF_8));
 
@@ -346,7 +399,10 @@ class LocalRiskGateCliTests {
 
     private AssessRiskUseCase service() {
         return new AssessRiskService(new DeterministicRiskAnalyzerAdapter(),
-                new RiskPolicyService(new RiskScore(90), new RiskScore(70)), () -> Integer.MAX_VALUE);
+                new RiskPolicyService(new RiskScore(90), new RiskScore(70)), () -> Integer.MAX_VALUE,
+                context -> {
+                    throw new SecurityRiskAssessmentException(FailureKind.CONFIGURATION_ERROR);
+                });
     }
 
     private String[] args() throws IOException {

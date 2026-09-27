@@ -1,6 +1,7 @@
 package io.github.dochiri0916.riskgate.riskassessment.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.github.dochiri0916.riskgate.riskassessment.application.port.in.AssessRiskUseCase.AssessRiskCommand;
 import io.github.dochiri0916.riskgate.riskassessment.application.port.in.AssessRiskUseCase.AssessRiskCommand.BuildConventionReport;
@@ -12,11 +13,15 @@ import io.github.dochiri0916.riskgate.riskassessment.application.port.out.RiskAn
 import io.github.dochiri0916.riskgate.riskassessment.application.port.out.RiskAnalyzerPort.Analysis;
 import io.github.dochiri0916.riskgate.riskassessment.application.port.out.RiskAnalyzerPort.AnalysisRequest;
 import io.github.dochiri0916.riskgate.riskassessment.application.port.out.RiskAnalyzerPort.Finding;
+import io.github.dochiri0916.riskgate.riskassessment.application.port.out.SecurityRiskAssessmentPort.FailureKind;
+import io.github.dochiri0916.riskgate.riskassessment.application.port.out.SecurityRiskAssessmentPort.SecurityRiskAssessmentException;
+import io.github.dochiri0916.riskgate.riskassessment.domain.model.JevAssessment;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskCategory;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskDecision;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskPolicyService;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskScore;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskSeverity;
+import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskProbability;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.DisplayName;
@@ -37,9 +42,8 @@ class AssessRiskServiceTests {
             received.set(request);
             return new Analysis(new RiskScore(70), List.of(analyzedFinding));
         };
-        final AssessRiskService service = new AssessRiskService(
-                analyzer, new RiskPolicyService(new RiskScore(90), new RiskScore(70)), () -> 262144
-        );
+        final AssessRiskService service = service(
+                analyzer, new RiskPolicyService(new RiskScore(90), new RiskScore(70)));
         final AssessRiskCommand command = new AssessRiskCommand(
                 "1", "org/service", "abcdef1234567", null, report("PASS", List.of()), new SemgrepReport(List.of()),
                 List.of(new AssessRiskCommand.FindingInput(
@@ -73,7 +77,7 @@ class AssessRiskServiceTests {
     void buildConventionFailureBlocksWithoutChangingAnalyzerScore() {
         // given
         final RiskAnalyzerPort analyzer = request -> new Analysis(new RiskScore(10), List.of());
-        final AssessRiskService service = new AssessRiskService(analyzer, policy, () -> 262144);
+        final AssessRiskService service = service(analyzer, policy);
         final AssessRiskCommand command = command("FAIL", List.of());
 
         // when
@@ -90,7 +94,7 @@ class AssessRiskServiceTests {
     void overallBuildConventionStatusControlsBlockSignal() {
         // given
         final RiskAnalyzerPort analyzer = request -> new Analysis(new RiskScore(5), List.of());
-        final AssessRiskService service = new AssessRiskService(analyzer, policy, () -> 262144);
+        final AssessRiskService service = service(analyzer, policy);
         final BuildConventionReport report = report("PASS", List.of(
                 new AssessRiskCommand.Check("BUILD_CONVENTION", "architecture", "FAIL")
         ));
@@ -113,7 +117,7 @@ class AssessRiskServiceTests {
     void semgrepCriticalBlocksWhenAnalyzerDropsFinding() {
         // given
         final RiskAnalyzerPort analyzer = request -> new Analysis(new RiskScore(10), List.of());
-        final AssessRiskService service = new AssessRiskService(analyzer, policy, () -> 262144);
+        final AssessRiskService service = service(analyzer, policy);
         final AssessRiskCommand command = new AssessRiskCommand("1", "org/service", "abcdef1234567", null,
                 report("PASS", List.of()), new SemgrepReport(List.of(
                 new SemgrepFinding(RiskSeverity.CRITICAL, "security.rule", "src/Order.java", 12, "위험")
@@ -134,7 +138,7 @@ class AssessRiskServiceTests {
     void nonCriticalSemgrepFindingFollowsAnalyzerScore() {
         // given
         final RiskAnalyzerPort analyzer = request -> new Analysis(new RiskScore(10), request.findings());
-        final AssessRiskService service = new AssessRiskService(analyzer, policy, () -> 262144);
+        final AssessRiskService service = service(analyzer, policy);
         final AssessRiskCommand command = new AssessRiskCommand("1", "org/service", "abcdef1234567", null,
                 report("PASS", List.of()), new SemgrepReport(List.of(
                 new SemgrepFinding(RiskSeverity.LOW, "security.rule", "src/Order.java", 12, "위험")
@@ -159,7 +163,7 @@ class AssessRiskServiceTests {
                 RiskCategory.SECURITY, RiskSeverity.CRITICAL, "SEMGREP", "재분류", "근거"
         );
         final RiskAnalyzerPort analyzer = request -> new Analysis(new RiskScore(15), List.of(reclassified));
-        final AssessRiskService service = new AssessRiskService(analyzer, policy, () -> 262144);
+        final AssessRiskService service = service(analyzer, policy);
         final AssessRiskCommand command = command("PASS", List.of(new AssessRiskCommand.FindingInput(
                 RiskCategory.SECURITY, RiskSeverity.LOW, "SEMGREP", "원본", "근거"
         )));
@@ -188,7 +192,7 @@ class AssessRiskServiceTests {
         for (int index = 0; index < scores.size(); index++) {
             final RiskScore score = scores.get(index);
             final RiskAnalyzerPort analyzer = request -> new Analysis(score, request.findings());
-            final var result = new AssessRiskService(analyzer, policy, () -> 262144).assess(command);
+            final var result = service(analyzer, policy).assess(command);
             assertThat(result.decision()).isEqualTo(decisions.get(index));
             assertThat(result.score()).isEqualTo(score.value());
         }
@@ -214,7 +218,7 @@ class AssessRiskServiceTests {
                 report("PASS", List.of()), new SemgrepReport(List.of()), List.of(), files, diff);
 
         // when
-        final var result = new AssessRiskService(analyzer, policy, () -> 262144).assess(command);
+        final var result = service(analyzer, policy).assess(command);
 
         // then
         assertThat(received.get().changedFiles()).containsExactlyElementsOf(files);
@@ -229,7 +233,7 @@ class AssessRiskServiceTests {
     void diffDoesNotAffectDeterministicBlockSignals() {
         // given
         final RiskAnalyzerPort analyzer = request -> new Analysis(new RiskScore(0), List.of());
-        final var service = new AssessRiskService(analyzer, policy, () -> 262144);
+        final var service = service(analyzer, policy);
         final String diff = "diff --git a/file b/file\n+transaction delete secret-marker";
         final var conventionFailure = new AssessRiskCommand("1", "org/service", "abcdef1234567", null,
                 report("FAIL", List.of()), new SemgrepReport(List.of()), List.of(), List.of(), diff);
@@ -243,12 +247,92 @@ class AssessRiskServiceTests {
         assertThat(service.assess(semgrepCritical).decision()).isEqualTo(RiskDecision.BLOCK);
     }
 
+    @Test
+    @DisplayName("Jev 단독 high risk는 모두 BLOCK이 아닌 REVIEW와 reason code를 반환한다")
+    void highJevRiskReturnsReviewWithStructuredAssessment() {
+        // given
+        final JevAssessment assessment = jev(0.1, 0.91, 0.2, 0.1);
+        final AssessRiskService service = new AssessRiskService(
+                request -> new Analysis(new RiskScore(0), List.of()), policy, () -> 262144,
+                context -> assessment
+        );
+        final AssessRiskCommand command = jevCommand("PASS", List.of());
+
+        // when
+        final var result = service.assess(command);
+
+        // then
+        assertThat(result.decision()).isEqualTo(RiskDecision.REVIEW);
+        assertThat(result.decision()).isNotEqualTo(RiskDecision.BLOCK);
+        assertThat(result.reasonCodes()).containsExactly("HIGH_AUTHORIZATION_RISK");
+        assertThat(result.jevAssessment()).isEqualTo(assessment);
+    }
+
+    @Test
+    @DisplayName("deterministic BLOCK이면 Jev를 호출하지 않고 BLOCK을 유지한다")
+    void deterministicBlockSkipsJevAndStaysBlocked() {
+        // given
+        final AssessRiskService service = new AssessRiskService(
+                request -> new Analysis(new RiskScore(0), List.of()), policy, () -> 262144,
+                context -> { throw new AssertionError("deterministic BLOCK must not call Jev"); }
+        );
+
+        // when
+        final var result = service.assess(jevCommand("FAIL", List.of()));
+
+        // then
+        assertThat(result.decision()).isEqualTo(RiskDecision.BLOCK);
+        assertThat(result.reasonCodes()).containsExactly("BUILD_CONVENTION_FAILED");
+        assertThat(result.jevAssessment()).isNull();
+    }
+
+    @Test
+    @DisplayName("Jev provider 실패는 예외로 전달되어 PASS 결과를 만들지 않는다")
+    void jevFailureIsNotConvertedToPass() {
+        // given
+        final AssessRiskService service = new AssessRiskService(
+                request -> new Analysis(new RiskScore(0), List.of()), policy, () -> 262144,
+                context -> { throw new SecurityRiskAssessmentException(FailureKind.TIMEOUT); }
+        );
+
+        // when
+        final org.assertj.core.api.ThrowableAssert.ThrowingCallable action =
+                () -> service.assess(jevCommand("PASS", List.of()));
+
+        // then
+        assertThatThrownBy(action).isInstanceOf(SecurityRiskAssessmentException.class)
+                .extracting(exception -> ((SecurityRiskAssessmentException) exception).failureKind())
+                .isEqualTo(FailureKind.TIMEOUT);
+    }
+
     private AssessRiskCommand command(
             final String reportStatus,
             final List<AssessRiskCommand.FindingInput> findings
     ) {
         return new AssessRiskCommand("1", "org/service", "abcdef1234567", null,
                 report(reportStatus, List.of()), new SemgrepReport(List.of()), findings, List.of(), "");
+    }
+
+    private AssessRiskService service(final RiskAnalyzerPort analyzer, final RiskPolicyService riskPolicy) {
+        return new AssessRiskService(analyzer, riskPolicy, () -> 262144, context -> {
+            throw new AssertionError("Jev must stay disabled unless a test enables it");
+        });
+    }
+
+    private AssessRiskCommand jevCommand(
+            final String reportStatus,
+            final List<AssessRiskCommand.FindingInput> findings
+    ) {
+        return new AssessRiskCommand("1", "org/service", "abcdef1234567", null,
+                report(reportStatus, List.of()), new SemgrepReport(List.of()), findings,
+                List.of(new AssessRiskCommand.ChangedFile("src/A.java", "MODIFIED")), "safe diff", true);
+    }
+
+    private JevAssessment jev(
+            final double security, final double authorization, final double integrity, final double breaking
+    ) {
+        return new JevAssessment(new RiskProbability(security), new RiskProbability(authorization),
+                new RiskProbability(integrity), new RiskProbability(breaking));
     }
 
     private BuildConventionReport report(final String status, final List<AssessRiskCommand.Check> checks) {

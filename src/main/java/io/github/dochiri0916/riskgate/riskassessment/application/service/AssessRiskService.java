@@ -3,6 +3,8 @@ package io.github.dochiri0916.riskgate.riskassessment.application.service;
 import io.github.dochiri0916.riskgate.riskassessment.application.port.in.AssessRiskUseCase;
 import io.github.dochiri0916.riskgate.riskassessment.application.port.out.RiskAnalyzerPort;
 import io.github.dochiri0916.riskgate.riskassessment.application.port.out.DiffLimitPort;
+import io.github.dochiri0916.riskgate.riskassessment.application.port.out.ChangeContext;
+import io.github.dochiri0916.riskgate.riskassessment.application.port.out.SecurityRiskAssessmentPort;
 import io.github.dochiri0916.riskgate.riskassessment.application.port.out.RiskAnalyzerPort.Analysis;
 import io.github.dochiri0916.riskgate.riskassessment.application.port.out.RiskAnalyzerPort.AnalysisRequest;
 import io.github.dochiri0916.riskgate.riskassessment.application.port.out.RiskAnalyzerPort.Finding;
@@ -13,7 +15,9 @@ import io.github.dochiri0916.riskgate.riskassessment.domain.model.PolicySignals;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskPolicyInput;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskPolicyResult;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskPolicyService;
+import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskDecision;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskSeverity;
+import io.github.dochiri0916.riskgate.riskassessment.domain.model.JevAssessment;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -30,6 +34,7 @@ public final class AssessRiskService implements AssessRiskUseCase {
     private final RiskAnalyzerPort riskAnalyzerPort;
     private final RiskPolicyService riskPolicyService;
     private final DiffLimitPort diffLimitPort;
+    private final SecurityRiskAssessmentPort securityRiskAssessmentPort;
 
     @Override
     @Transactional
@@ -59,9 +64,16 @@ public final class AssessRiskService implements AssessRiskUseCase {
         }
         final AnalysisRequest request = new AnalysisRequest(analyzerFindings, command.changedFiles(), command.diff());
         final Analysis analysis = riskAnalyzerPort.analyze(request);
-        final RiskPolicyResult policyResult = riskPolicyService.evaluate(
-                new RiskPolicyInput(analysis.score(), signalsFor(command))
-        );
+        final RiskPolicyInput deterministicInput = new RiskPolicyInput(analysis.score(), signalsFor(command));
+        final RiskPolicyResult deterministicResult = riskPolicyService.evaluate(deterministicInput);
+        final boolean deterministicBlock = deterministicResult.decision()
+                == RiskDecision.BLOCK;
+        final JevAssessment jevAssessment = command.jevEnabled() && !deterministicBlock
+                ? securityRiskAssessmentPort.assess(changeContext(command)) : null;
+        final RiskPolicyResult policyResult = jevAssessment == null
+                ? deterministicResult
+                : riskPolicyService.evaluate(
+                        new RiskPolicyInput(analysis.score(), signalsFor(command), jevAssessment));
         final List<String> reasonCodes = policyResult.reasons().values().stream()
                 .map(PolicyReason::name)
                 .toList();
@@ -78,7 +90,20 @@ public final class AssessRiskService implements AssessRiskUseCase {
                                 finding.evidence()
                         ))
                         .toList(),
-                POLICY_VERSION
+                POLICY_VERSION,
+                jevAssessment
+        );
+    }
+
+    private ChangeContext changeContext(final AssessRiskCommand command) {
+        return new ChangeContext(
+                command.changedFiles().stream()
+                        .map(file -> new ChangeContext.ChangedFile(file.path(), file.changeType())).toList(),
+                command.diff(),
+                command.buildConventionReport().status(),
+                command.findings().stream().map(finding -> new ChangeContext.DeterministicFinding(
+                        finding.category().name(), finding.severity().name(), finding.source(), finding.evidence()
+                )).toList()
         );
     }
 

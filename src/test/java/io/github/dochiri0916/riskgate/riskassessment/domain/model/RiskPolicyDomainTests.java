@@ -145,6 +145,119 @@ class RiskPolicyDomainTests {
     }
 
     @Test
+    @DisplayName("Jev risk가 없으면 기존 deterministic PASS를 유지한다")
+    void passWhenJevRisksAreLow() {
+        // given
+        final JevAssessment jev = jev(0.84, 0.84, 0.84, 0.84);
+
+        // when
+        final RiskPolicyResult result = riskPolicyService.evaluate(new RiskPolicyInput(
+                new RiskScore(0), new PolicySignals(List.of()), jev));
+
+        // then
+        assertEquals(RiskDecision.PASS, result.decision(), "모든 Jev risk가 초기 임계값보다 낮으면 PASS 한다");
+    }
+
+    @Test
+    @DisplayName("각 Jev risk가 임계값 이상이면 대응 reason code와 함께 REVIEW 한다")
+    void reviewForEachJevRiskThreshold() {
+        // given
+        final List<JevAssessment> assessments = List.of(
+                jev(0.85, 0, 0, 0), jev(0, 0.85, 0, 0), jev(0, 0, 0.85, 0), jev(0, 0, 0, 0.85));
+
+        // when
+        final List<RiskPolicyResult> results = assessments.stream()
+                .map(assessment -> riskPolicyService.evaluate(new RiskPolicyInput(
+                        new RiskScore(0), new PolicySignals(List.of()), assessment)))
+                .toList();
+        final List<PolicyReason> reasons = results.stream()
+                .flatMap(result -> result.reasons().values().stream()).toList();
+
+        // then
+        assertEquals(List.of(RiskDecision.REVIEW, RiskDecision.REVIEW,
+                RiskDecision.REVIEW, RiskDecision.REVIEW), results.stream().map(RiskPolicyResult::decision).toList(),
+                "각 Jev risk가 단독으로 임계값에 도달하면 REVIEW 한다");
+        assertEquals(List.of(PolicyReason.HIGH_SECURITY_RISK, PolicyReason.HIGH_AUTHORIZATION_RISK,
+                PolicyReason.HIGH_DATA_INTEGRITY_RISK, PolicyReason.HIGH_BREAKING_CHANGE_RISK), reasons,
+                "각 risk에 대응하는 reason code를 반환한다");
+    }
+
+    @Test
+    @DisplayName("복수 Jev risk는 모두 REVIEW 사유로 반환하고 BLOCK하지 않는다")
+    void reviewAllHighJevRisksButNeverBlock() {
+        // given
+        final JevAssessment assessment = jev(0.9, 0.91, 0.85, 0.99);
+
+        // when
+        final RiskPolicyResult result = riskPolicyService.evaluate(new RiskPolicyInput(
+                new RiskScore(0), new PolicySignals(List.of()), assessment));
+
+        // then
+        assertEquals(RiskDecision.REVIEW, result.decision(), "Jev만으로 BLOCK하지 않고 REVIEW 한다");
+        assertEquals(List.of(PolicyReason.HIGH_SECURITY_RISK, PolicyReason.HIGH_AUTHORIZATION_RISK,
+                PolicyReason.HIGH_DATA_INTEGRITY_RISK, PolicyReason.HIGH_BREAKING_CHANGE_RISK),
+                result.reasons().values(), "모든 임계값 초과 reason code를 반환한다");
+    }
+
+    @Test
+    @DisplayName("deterministic BLOCK은 Jev risk와 관계없이 유지한다")
+    void deterministicBlockHasPriorityOverJev() {
+        // given
+        final JevAssessment low = jev(0, 0, 0, 0);
+        final JevAssessment high = jev(1, 1, 1, 1);
+
+        // when
+        final RiskPolicyResult lowResult = riskPolicyService.evaluate(new RiskPolicyInput(
+                new RiskScore(0), new PolicySignals(List.of(PolicySignal.BUILD_CONVENTION_FAILED)), low));
+        final RiskPolicyResult highResult = riskPolicyService.evaluate(new RiskPolicyInput(
+                new RiskScore(0), new PolicySignals(List.of(PolicySignal.BUILD_CONVENTION_FAILED)), high));
+
+        // then
+        assertEquals(RiskDecision.BLOCK, lowResult.decision(), "낮은 Jev risk가 deterministic BLOCK을 낮추지 않는다");
+        assertEquals(RiskDecision.BLOCK, highResult.decision(), "높은 Jev risk도 deterministic BLOCK을 덮지 않는다");
+    }
+
+    @Test
+    @DisplayName("누락된 Jev 임계값은 정책 설정 오류다")
+    void rejectMissingJevRiskThreshold() {
+        // given
+        final RiskScore blockThreshold = new RiskScore(90);
+        final RiskScore reviewThreshold = new RiskScore(70);
+
+        // when
+        final RiskAssessmentDomainException exception = assertThrows(
+                RiskAssessmentDomainException.class,
+                () -> new RiskPolicyService(blockThreshold, reviewThreshold, null)
+        );
+
+        // then
+        assertEquals("RISK-ASSESSMENT-003", exception.errorCode().code(), "누락된 Jev 임계값을 설정 오류로 처리한다");
+    }
+
+    @Test
+    @DisplayName("누락된 Jev review 확률 임계값은 거부한다")
+    void rejectMissingJevReviewProbability() {
+        // given
+        final Runnable invalidConfiguration = () -> new JevRiskThresholds(null);
+
+        // when
+        final RiskAssessmentDomainException exception = assertThrows(
+                RiskAssessmentDomainException.class,
+                invalidConfiguration::run
+        );
+
+        // then
+        assertEquals("RISK-ASSESSMENT-003", exception.errorCode().code(), "누락된 확률은 정책 설정 오류다");
+    }
+
+    private JevAssessment jev(
+            final double security, final double authorization, final double integrity, final double breakingChange
+    ) {
+        return new JevAssessment(new RiskProbability(security), new RiskProbability(authorization),
+                new RiskProbability(integrity), new RiskProbability(breakingChange));
+    }
+
+    @Test
     @DisplayName("review 임계값은 block 임계값보다 낮아야 한다")
     void rejectInvalidThresholdOrder() {
         // given

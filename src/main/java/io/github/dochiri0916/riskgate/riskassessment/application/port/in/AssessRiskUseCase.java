@@ -3,6 +3,7 @@ package io.github.dochiri0916.riskgate.riskassessment.application.port.in;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskCategory;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskDecision;
 import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskSeverity;
+import io.github.dochiri0916.riskgate.riskassessment.domain.model.JevAssessment;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
@@ -19,11 +20,25 @@ public interface AssessRiskUseCase {
             int score,
             List<String> reasonCodes,
             List<FindingResult> findings,
-            String policyVersion
+            String policyVersion,
+            JevAssessment jevAssessment
     ) {
         public AssessRiskResult {
             reasonCodes = List.copyOf(reasonCodes);
             findings = List.copyOf(findings);
+        }
+
+        public AssessRiskResult(
+                final UUID assessmentId,
+                final String repository,
+                final String commitSha,
+                final RiskDecision decision,
+                final int score,
+                final List<String> reasonCodes,
+                final List<FindingResult> findings,
+                final String policyVersion
+        ) {
+            this(assessmentId, repository, commitSha, decision, score, reasonCodes, findings, policyVersion, null);
         }
     }
 
@@ -48,12 +63,28 @@ public interface AssessRiskUseCase {
             SemgrepReport semgrepReport,
             List<FindingInput> findings,
             List<ChangedFile> changedFiles,
-            String diff
+            String diff,
+            boolean jevEnabled
     ) {
         public AssessRiskCommand {
             findings = List.copyOf(findings);
             changedFiles = List.copyOf(changedFiles);
 
+        }
+
+        public AssessRiskCommand(
+                final String reportVersion,
+                final String repository,
+                final String commitSha,
+                final Integer pullRequestNumber,
+                final BuildConventionReport buildConventionReport,
+                final SemgrepReport semgrepReport,
+                final List<FindingInput> findings,
+                final List<ChangedFile> changedFiles,
+                final String diff
+        ) {
+            this(reportVersion, repository, commitSha, pullRequestNumber, buildConventionReport,
+                    semgrepReport, findings, changedFiles, diff, false);
         }
 
         public record FindingInput(
