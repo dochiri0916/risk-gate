@@ -3,10 +3,12 @@ package io.github.dochiri0916.riskgate.riskassessment.adapter.out.typesafe;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.sun.net.httpserver.HttpServer;
-import io.github.dochiri0916.riskgate.riskassessment.application.port.out.SecurityRiskAssessmentPort.ChangedFile;
+import io.github.dochiri0916.riskgate.riskassessment.application.port.out.ChangeContext;
+import io.github.dochiri0916.riskgate.riskassessment.application.port.out.ChangeContext.ChangedFile;
+import io.github.dochiri0916.riskgate.riskassessment.domain.model.JevAssessment;
+import io.github.dochiri0916.riskgate.riskassessment.domain.model.RiskProbability;
 import io.github.dochiri0916.riskgate.riskassessment.application.port.out.SecurityRiskAssessmentPort.FailureKind;
 import io.github.dochiri0916.riskgate.riskassessment.application.port.out.SecurityRiskAssessmentPort.SecurityRiskAssessmentException;
-import io.github.dochiri0916.riskgate.riskassessment.application.port.out.SecurityRiskAssessmentPort.SecurityRiskAssessmentRequest;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.InetAddress;
@@ -23,13 +25,13 @@ import org.junit.jupiter.api.Test;
 
 class TypeSafeSecurityRiskAssessmentAdapterTests {
     private static final JsonMapper OBJECT_MAPPER = JsonMapper.builder().build();
-    private static final SecurityRiskAssessmentRequest REQUEST = new SecurityRiskAssessmentRequest(
-            "+ added code", List.of(new ChangedFile("src/Example.java", "MODIFIED"))
+    private static final ChangeContext REQUEST = new ChangeContext(
+            List.of(new ChangedFile("src/Example.java", "MODIFIED")), "+ added code", "PASS", List.of()
     );
 
     @Test
-    @DisplayName("Jev Noul 응답을 보안 위험 확률과 사용량으로 변환한다")
-    void mapsTypedNoulResponseAndSendsPinnedQuestion() throws IOException {
+    @DisplayName("하나의 Jev 요청에 네 Noul 질문을 보내고 provider-neutral 결과로 변환한다")
+    void mapsFourTypedNoulResponsesAndSendsCatalogQuestions() throws IOException {
         // given
         final AtomicReference<String> authHeader = new AtomicReference<>();
         final AtomicReference<JsonNode> requestBody = new AtomicReference<>();
@@ -42,17 +44,21 @@ class TypeSafeSecurityRiskAssessmentAdapterTests {
             final var result = adapter.assess(REQUEST);
 
             // then
-            assertThat(result.model()).isEqualTo("jev-1.13.0");
-            assertThat(result.probability()).isEqualTo(0.73);
-            assertThat(result.inputTokens()).isEqualTo(120);
-            assertThat(result.outputTokens()).isEqualTo(14);
+            assertThat(result).isEqualTo(new JevAssessment(
+                    new RiskProbability(0.73), new RiskProbability(0.22),
+                    new RiskProbability(0.33), new RiskProbability(0.44)
+            ));
             assertThat(authHeader.get()).isEqualTo("Bearer secret-for-test");
             assertThat(requestBody.get().path("model").asText()).isEqualTo("jev-1.13.0");
-            assertThat(requestBody.get().path("questions").size()).isEqualTo(1);
+            assertThat(requestBody.get().path("questions").size()).isEqualTo(4);
             assertThat(requestBody.get().path("questions").has("security_risk")).isTrue();
+            assertThat(requestBody.get().path("questions").has("authorization_risk")).isTrue();
+            assertThat(requestBody.get().path("questions").has("data_integrity_risk")).isTrue();
+            assertThat(requestBody.get().path("questions").has("breaking_change")).isTrue();
             assertThat(requestBody.get().path("questions").path("security_risk").path("type").asText())
                     .isEqualTo("noul");
             assertThat(requestBody.get().path("state").path("diff").asText()).isEqualTo("+ added code");
+            assertThat(requestBody.get().path("state").path("build_convention_status").asText()).isEqualTo("PASS");
         }
     }
 
@@ -114,7 +120,7 @@ class TypeSafeSecurityRiskAssessmentAdapterTests {
     @DisplayName("Noul 응답 값이 범위를 벗어나면 malformed response로 구분한다")
     void rejectsOutOfRangeNoulProbability() throws IOException {
         // given
-        final String response = validResponse().replace("0.73", "1.2");
+            final String response = validResponse().replace("0.73", "1.2");
         try (LocalTestServer server = new LocalTestServer(200, response)) {
             final TypeSafeSecurityRiskAssessmentAdapter adapter = adapter(server.url(), "test-key");
 
@@ -197,6 +203,23 @@ class TypeSafeSecurityRiskAssessmentAdapterTests {
     }
 
     @Test
+    @DisplayName("중복 answer key는 malformed response로 구분한다")
+    void rejectsDuplicateAnswerKey() throws IOException {
+        // given
+        final String response = validResponse().replace("\"authorization_risk\":{",
+                "\"security_risk\":{\"type\":\"noul\",\"noul\":0.1},\"authorization_risk\":{");
+        try (LocalTestServer server = new LocalTestServer(200, response)) {
+            final TypeSafeSecurityRiskAssessmentAdapter adapter = adapter(server.url(), "test-key");
+
+            // when
+            final FailureKind failure = failureKind(adapter);
+
+            // then
+            assertThat(failure).isEqualTo(FailureKind.MALFORMED_RESPONSE);
+        }
+    }
+
+    @Test
     @DisplayName("필수 response 필드와 token 값이 유효하지 않으면 malformed response로 구분한다")
     void rejectsMissingAndInvalidTypedResponseFields() {
         // given
@@ -204,12 +227,12 @@ class TypeSafeSecurityRiskAssessmentAdapterTests {
                 "{\"model\":null,\"answers\":{},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}",
                 "{\"model\":\"jev-1.13.0\",\"answers\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}",
                 "{\"model\":\"jev-1.13.0\",\"answers\":{},\"usage\":null}",
-                noulResponse("null", "1", "1"),
-                noulResponse("-0.1", "1", "1"),
-                noulResponse("0.2", "null", "1"),
-                noulResponse("0.2", "-1", "1"),
-                noulResponse("0.2", "1", "null"),
-                noulResponse("0.2", "1", "-1")
+                validResponse().replace("0.73", "null"),
+                validResponse().replace("0.73", "-0.1"),
+                validResponse().replace("\"input_tokens\":120", "\"input_tokens\":null"),
+                validResponse().replace("\"input_tokens\":120", "\"input_tokens\":-1"),
+                validResponse().replace("\"output_tokens\":14", "\"output_tokens\":null"),
+                validResponse().replace("\"output_tokens\":14", "\"output_tokens\":-1")
         );
 
         // when
@@ -255,14 +278,11 @@ class TypeSafeSecurityRiskAssessmentAdapterTests {
 
     private static String validResponse() {
         return "{\"model\":\"jev-1.13.0\",\"answers\":{\"security_risk\":{" +
-                "\"type\":\"noul\",\"noul\":0.73}},\"usage\":{" +
+                "\"type\":\"noul\",\"noul\":0.73},\"authorization_risk\":{" +
+                "\"type\":\"noul\",\"noul\":0.22},\"data_integrity_risk\":{" +
+                "\"type\":\"noul\",\"noul\":0.33},\"breaking_change\":{" +
+                "\"type\":\"noul\",\"noul\":0.44}},\"usage\":{" +
                 "\"input_tokens\":120,\"output_tokens\":14}}";
-    }
-
-    private static String noulResponse(final String probability, final String inputTokens, final String outputTokens) {
-        return "{\"model\":\"jev-1.13.0\",\"answers\":{\"security_risk\":{" +
-                "\"type\":\"noul\",\"noul\":" + probability + "}},\"usage\":{" +
-                "\"input_tokens\":" + inputTokens + ",\"output_tokens\":" + outputTokens + "}}";
     }
 
     private static final class LocalTestServer implements AutoCloseable {

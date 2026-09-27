@@ -45,4 +45,8 @@ public final class RiskAssessmentDomainException extends DomainException {
         return new RiskAssessmentDomainException(RiskAssessmentErrorCode.INVALID_POLICY_INPUT, Map.of());
     }
 
+    public static RiskAssessmentDomainException invalidJevAssessmentProbability() {
+        return new RiskAssessmentDomainException(RiskAssessmentErrorCode.INVALID_JEV_ASSESSMENT, Map.of());
+    }
+
 }

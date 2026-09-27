@@ -1,10 +1,10 @@
 package io.github.dochiri0916.riskgate.riskassessment.application.port.out;
 
-import java.util.List;
+import io.github.dochiri0916.riskgate.riskassessment.domain.model.JevAssessment;
 
 @FunctionalInterface
 public interface SecurityRiskAssessmentPort {
-    SecurityRiskAssessment assess(SecurityRiskAssessmentRequest request);
+    JevAssessment assess(ChangeContext context);
 
     enum FailureKind {
         CONFIGURATION_ERROR,
@@ -32,18 +32,4 @@ public interface SecurityRiskAssessmentPort {
         }
     }
 
-    record SecurityRiskAssessmentRequest(String diff, List<ChangedFile> changedFiles) {
-        public SecurityRiskAssessmentRequest {
-            changedFiles = List.copyOf(changedFiles);
-        }
-
-        @Override
-        public String toString() {
-            return "SecurityRiskAssessmentRequest[diff=<redacted>]";
-        }
-    }
-
-    record ChangedFile(String path, String changeType) { }
-
-    record SecurityRiskAssessment(String model, double probability, int inputTokens, int outputTokens) { }
 }
