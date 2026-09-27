@@ -10,4 +10,9 @@ public class LocalRiskGateConfiguration {
     public LocalRiskGateCli localRiskGateCli(final AssessRiskUseCase assessRiskUseCase) {
         return new LocalRiskGateCli(assessRiskUseCase);
     }
+
+    @Bean
+    public CiRiskGateCli ciRiskGateCli(final AssessRiskUseCase assessRiskUseCase) {
+        return new CiRiskGateCli(assessRiskUseCase);
+    }
 }

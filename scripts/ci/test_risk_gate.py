@@ -28,6 +28,7 @@ class ReusableWorkflowTests(unittest.TestCase):
         self.assertIn("--exclude .risk-gate", workflow)
         self.assertIn("working-directory: .risk-gate\n        run: ./gradlew bootJar", workflow)
         self.assertIn("run: python3 .risk-gate/scripts/ci/risk_gate.py", workflow)
+        self.assertNotIn("server.port", workflow)
 
     def test_pr_context_creates_then_reuses_pr(self):
         spec = importlib.util.spec_from_file_location("pr_context_test_target", CONTEXT)
@@ -58,7 +59,7 @@ class ReusableWorkflowTests(unittest.TestCase):
                                  ("main", 9, "manual-sha"))
                 api.assert_not_called()
 
-    def test_script_uses_caller_for_diff_and_reports_and_tool_for_jar(self):
+    def test_script_uses_caller_reports_and_tool_jar(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory).resolve()
             tool = workspace / ".risk-gate"
@@ -67,13 +68,67 @@ class ReusableWorkflowTests(unittest.TestCase):
                 spec = importlib.util.spec_from_file_location("risk_gate_test_target", SCRIPT)
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
-            self.assertEqual(module.BUILD, workspace / "build/reports/build-convention/report.json")
-            self.assertEqual(module.SEMGREP, workspace / "build/reports/semgrep/report.json")
-            self.assertEqual(module.RESPONSE, workspace / "build/reports/risk-gate/response.json")
+            self.assertEqual(module.BUILD_REPORT, workspace / "build/reports/build-convention/report.json")
+            self.assertEqual(module.SEMGREP_REPORT, workspace / "build/reports/semgrep/report.json")
+            self.assertEqual(module.RISK_GATE_RESPONSE, workspace / "build/reports/risk-gate/response.json")
             self.assertEqual(module.RISK_GATE, tool)
-            with patch.object(module.subprocess, "check_output", return_value=b"M\0src/App.java\0") as diff:
-                self.assertEqual(module.changes("main"), [{"path": "src/App.java", "changeType": "MODIFIED"}])
-            self.assertEqual(diff.call_args.kwargs["cwd"], workspace)
+
+    def test_one_shot_decision_exit_codes(self):
+        spec = importlib.util.spec_from_file_location("risk_gate_exit_test", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        jar = Path("risk-gate.jar")
+        cases = ((0, "PASS"), (2, "REVIEW"), (3, "BLOCK"))
+        for exit_code, decision in cases:
+            with self.subTest(decision=decision), patch.dict(os.environ, {
+                "BASE_REF": "main", "REPOSITORY": "owner/repo", "HEAD_SHA": "abcdef0", "PR_NUMBER": "1",
+                "BUILD_EXIT": "0", "SEMGREP_EXIT": "0",
+            }), patch.object(module, "find_boot_jar", return_value=jar), patch.object(
+                module.subprocess, "run",
+                return_value=subprocess.CompletedProcess([], exit_code,
+                    json.dumps({"decision": decision, "reasonCodes": [], "score": 0}), ""),
+            ) as run:
+                result, actual_exit = module.run_risk_gate()
+                self.assertEqual((result["decision"], actual_exit), (decision, exit_code))
+                self.assertEqual(run.call_args.args[0][:5], ["java", "-jar", str(jar), "ci", "--project"])
+
+    def test_one_shot_error_contract(self):
+        spec = importlib.util.spec_from_file_location("risk_gate_error_test", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with patch.dict(os.environ, {
+            "BASE_REF": "main", "REPOSITORY": "owner/repo", "HEAD_SHA": "abcdef0", "PR_NUMBER": "1",
+            "BUILD_EXIT": "0", "SEMGREP_EXIT": "0",
+        }), patch.object(module, "find_boot_jar", return_value=Path("risk-gate.jar")), patch.object(
+            module.subprocess, "run", return_value=subprocess.CompletedProcess([], 4, "", "execution error")
+        ):
+            self.assertEqual(module.run_risk_gate(), ({"decision": "ERROR", "reasonCodes": ["EXECUTION_ERROR"], "score": 0}, 4))
+
+    def test_main_preserves_results_and_maps_cli_decisions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory).resolve()
+            build_path = workspace / "build/reports/build-convention/report.json"
+            semgrep_path = workspace / "build/reports/semgrep/report.json"
+            build_path.parent.mkdir(parents=True)
+            semgrep_path.parent.mkdir(parents=True)
+            build_path.write_text(json.dumps({"status": "PASS"}), encoding="utf-8")
+            semgrep_path.write_text(json.dumps({"results": []}), encoding="utf-8")
+            env = {"GITHUB_WORKSPACE": str(workspace), "RISK_GATE_PATH": str(workspace / ".risk-gate"),
+                   "BUILD_EXIT": "0", "SEMGREP_EXIT": "0", "BASE_REF": "main", "REPOSITORY": "o/r",
+                   "HEAD_SHA": "abcdef0", "PR_NUMBER": "1"}
+            with patch.dict(os.environ, env):
+                spec = importlib.util.spec_from_file_location("risk_gate_main_test", SCRIPT)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                cases = (("PASS", 0, 0), ("REVIEW", 2, 0), ("BLOCK", 3, 3), ("ERROR", 4, 4))
+                for decision, cli_exit, runner_exit in cases:
+                    with self.subTest(decision=decision), patch.object(module, "run_risk_gate", return_value=(
+                        {"decision": decision, "reasonCodes": [decision], "score": 0}, cli_exit
+                    )):
+                        self.assertEqual(module.main(), runner_exit)
+                        result = json.loads((workspace / "build/reports/risk-gate/response.json").read_text(
+                            encoding="utf-8"))
+                        self.assertEqual(result["decision"], decision)
 
 
 if __name__ == "__main__":

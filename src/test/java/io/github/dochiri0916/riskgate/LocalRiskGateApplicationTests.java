@@ -39,7 +39,7 @@ class LocalRiskGateApplicationTests {
         final List<String> serverArgs = new ArrayList<>();
 
         // when
-        final int exitCode = LocalRiskGateApplication.dispatch(args, ignored -> 3,
+        final int exitCode = LocalRiskGateApplication.dispatch(args, ignored -> 3, ignored -> 4,
                 forwarded -> serverArgs.addAll(List.of(forwarded)));
 
         // then
@@ -59,6 +59,17 @@ class LocalRiskGateApplicationTests {
         assertThat(LocalRiskGateApplication.isLocalCommand(localArgs)).isTrue();
         assertThat(LocalRiskGateApplication.isLocalCommand(noArgs)).isFalse();
         assertThat(LocalRiskGateApplication.isLocalCommand(otherArgs)).isFalse();
+    }
+
+    @Test
+    @DisplayName("ci 명령은 one-shot CLI 경로로 분기한다")
+    void identifiesCiCommand() {
+        // given
+        final String[] ciArgs = {"ci"};
+
+        // when & then
+        assertThat(LocalRiskGateApplication.isCiCommand(ciArgs)).isTrue();
+        assertThat(LocalRiskGateApplication.isCiCommand("local")).isFalse();
     }
 
     private void initializeProject() throws IOException, InterruptedException {

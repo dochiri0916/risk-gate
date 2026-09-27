@@ -1,562 +1,133 @@
 #!/usr/bin/env python3
-"""Collect PR inputs, run the local Risk Gate, and decide the CI result."""
+"""Run the packaged Risk Gate CI command and preserve its machine result."""
 
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
-import time
 import traceback
-import urllib.error
-import urllib.request
 
 
-WORKSPACE = Path(
-    os.environ.get("GITHUB_WORKSPACE", Path.cwd())
-).resolve()
-
-RISK_GATE = Path(
-    os.environ.get(
-        "RISK_GATE_PATH",
-        Path(__file__).resolve().parents[2],
-    )
-).resolve()
-
-BUILD_REPORT = (
-    WORKSPACE / "build/reports/build-convention/report.json"
-)
-
-SEMGREP_REPORT = (
-    WORKSPACE / "build/reports/semgrep/report.json"
-)
-
-RISK_GATE_RESPONSE = (
-    WORKSPACE / "build/reports/risk-gate/response.json"
-)
-
-RISK_GATE_PORT = 18080
-RISK_GATE_BASE_URL = f"http://127.0.0.1:{RISK_GATE_PORT}"
+WORKSPACE = Path(os.environ.get("GITHUB_WORKSPACE", Path.cwd())).resolve()
+RISK_GATE = Path(os.environ.get("RISK_GATE_PATH", Path(__file__).resolve().parents[2])).resolve()
+BUILD_REPORT = WORKSPACE / "build/reports/build-convention/report.json"
+SEMGREP_REPORT = WORKSPACE / "build/reports/semgrep/report.json"
+RISK_GATE_RESPONSE = WORKSPACE / "build/reports/risk-gate/response.json"
 
 
 def read_json(path: Path, label: str) -> dict:
     if not path.exists():
-        raise FileNotFoundError(
-            f"{label} does not exist: {path}"
-        )
-
+        raise FileNotFoundError(f"{label} does not exist: {path}")
     try:
-        return json.loads(
-            path.read_text(encoding="utf-8")
-        )
+        value = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
-        raise ValueError(
-            f"{label} contains invalid JSON: {path}"
-        ) from error
+        raise ValueError(f"{label} contains invalid JSON: {path}") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a JSON object: {path}")
+    return value
 
 
-def git_changes(base_ref: str) -> list[dict]:
-    raw = subprocess.check_output(
-        [
-            "git",
-            "diff",
-            "--name-status",
-            "-z",
-            "--find-renames",
-            f"origin/{base_ref}...HEAD",
-        ],
-        cwd=WORKSPACE,
-    ).split(b"\0")
-
-    files = []
-    index = 0
-
-    while index < len(raw) - 1:
-        status = raw[index].decode("ascii")
-        index += 1
-
-        if status.startswith("R") and status[1:].isdigit():
-            if index + 1 >= len(raw):
-                raise ValueError(
-                    "Malformed Git rename output"
-                )
-
-            # Skip original path.
-            index += 1
-            change_type = "RENAMED"
-
-        else:
-            change_type = {
-                "A": "ADDED",
-                "M": "MODIFIED",
-                "D": "DELETED",
-            }.get(status)
-
-        if change_type is None:
-            raise ValueError(
-                f"Unsupported Git change status: {status}"
-            )
-
-        if index >= len(raw):
-            raise ValueError(
-                f"Missing path for Git status: {status}"
-            )
-
-        files.append(
-            {
-                "path": os.fsdecode(raw[index]),
-                "changeType": change_type,
-            }
-        )
-
-        index += 1
-
-    return files
-
-
-def git_diff(base_ref: str) -> str:
-    return subprocess.check_output(
-        [
-            "git",
-            "diff",
-            "--binary",
-            f"origin/{base_ref}...HEAD",
-        ],
-        cwd=WORKSPACE,
-    ).decode(
-        "utf-8",
-        errors="replace",
-    )
-
-
-def write_summary(
-    message: str,
-    decision: str | None = None,
-    score=None,
-    reasons=None,
-    build_state: str | None = None,
-    semgrep_state: str | None = None,
-):
-    summary_path = os.environ.get(
-        "GITHUB_STEP_SUMMARY"
-    )
-
+def write_summary(message: str, result=None):
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_path:
         return
-
-    lines = [
-        f"## Risk Gate: {decision or 'ERROR'}",
-        message,
-    ]
-
-    if score is not None:
-        lines.append(
-            f"Risk Score: {score}"
-        )
-
-    if reasons:
+    decision = result.get("decision", "ERROR") if result else "ERROR"
+    lines = [f"## Risk Gate: {decision}", message]
+    if result and "score" in result:
+        lines.append(f"Risk Score: {result['score']}")
+    if result and result.get("reasonCodes"):
         lines.append("Reasons:")
-        lines.extend(
-            f"- {reason}"
-            for reason in reasons
-        )
-
-    if build_state is not None:
-        lines.append(
-            f"Build Convention: {build_state}"
-        )
-
-    if semgrep_state is not None:
-        lines.append(
-            f"Semgrep: {semgrep_state}"
-        )
-
-    with open(
-        summary_path,
-        "a",
-        encoding="utf-8",
-    ) as output:
-        output.write(
-            "\n\n".join(lines)
-        )
-        output.write("\n")
-
-
-def validate_build_report(
-    build: dict,
-    build_exit: int,
-) -> str:
-    status = build.get("status")
-
-    if status not in ("PASS", "FAIL"):
-        raise ValueError(
-            "Invalid Build Convention status: "
-            f"{status!r}"
-        )
-
-    exit_passed = build_exit == 0
-    report_passed = status == "PASS"
-
-    if exit_passed != report_passed:
-        return "INCONSISTENT"
-
-    return status
-
-
-def validate_semgrep_report(
-    semgrep: dict,
-    semgrep_exit: int,
-):
-    if semgrep_exit != 0:
-        raise ValueError(
-            "Semgrep execution failed "
-            f"(exit code: {semgrep_exit})"
-        )
-
-    results = semgrep.get("results")
-
-    if not isinstance(results, list):
-        raise ValueError(
-            "Semgrep report does not contain "
-            "a valid results array"
-        )
-
-    errors = semgrep.get("errors") or []
-
-    if not isinstance(errors, list):
-        raise ValueError(
-            "Semgrep report contains "
-            "an invalid errors field"
-        )
-
-    fatal_errors = []
-
-    for error in errors:
-        if not isinstance(error, dict):
-            fatal_errors.append(error)
-            continue
-
-        level = str(
-            error.get("level", "")
-        ).lower()
-
-        # Semgrep can report non-fatal parsing warnings
-        # inside the errors array.
-        if level in (
-            "warn",
-            "warning",
-            "info",
-        ):
-            continue
-
-        fatal_errors.append(error)
-
-    if fatal_errors:
-        raise ValueError(
-            "Semgrep report contains fatal "
-            "analysis errors "
-            f"(count: {len(fatal_errors)})"
-        )
+        lines.extend(f"- {reason}" for reason in result["reasonCodes"])
+    with open(summary_path, "a", encoding="utf-8") as output:
+        output.write("\n\n".join(lines) + "\n")
 
 
 def find_boot_jar() -> Path:
     libs = RISK_GATE / "build/libs"
-
     if not libs.exists():
-        raise FileNotFoundError(
-            "Risk Gate build/libs does not exist: "
-            f"{libs}"
-        )
-
-    jars = sorted(
-        path
-        for path in libs.glob("*.jar")
-        if not path.name.endswith("-plain.jar")
-    )
-
+        raise FileNotFoundError(f"Risk Gate build/libs does not exist: {libs}")
+    jars = sorted(path for path in libs.glob("*.jar") if not path.name.endswith("-plain.jar"))
     if len(jars) != 1:
-        names = [
-            path.name
-            for path in jars
-        ]
-
-        raise ValueError(
-            "Expected exactly one Risk Gate boot jar, "
-            f"found {len(jars)}: {names}"
-        )
-
+        raise ValueError(f"Expected exactly one Risk Gate boot jar, found {len(jars)}")
     return jars[0]
 
 
-def wait_until_ready(
-    process: subprocess.Popen,
-):
-    health_url = (
-        f"{RISK_GATE_BASE_URL}/actuator/health"
-    )
-
-    for _ in range(60):
-        return_code = process.poll()
-
-        if return_code is not None:
-            raise RuntimeError(
-                "Risk Gate process exited "
-                "before readiness "
-                f"(exit code: {return_code})"
-            )
-
-        try:
-            with urllib.request.urlopen(
-                health_url,
-                timeout=2,
-            ) as response:
-                if response.status == 200:
-                    return
-
-        except (
-            urllib.error.URLError,
-            TimeoutError,
-        ):
-            time.sleep(1)
-
-    raise RuntimeError(
-        "Risk Gate readiness timeout"
-    )
+def write_result(result: dict):
+    RISK_GATE_RESPONSE.parent.mkdir(parents=True, exist_ok=True)
+    RISK_GATE_RESPONSE.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def call_risk_gate(
-    request_body: dict,
-) -> dict:
-    endpoint = (
-        f"{RISK_GATE_BASE_URL}"
-        "/api/v1/risk-assessments"
-    )
-
-    payload = json.dumps(
-        request_body
-    ).encode("utf-8")
-
-    request = urllib.request.Request(
-        endpoint,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-
-    try:
-        with urllib.request.urlopen(
-            request,
-            timeout=30,
-        ) as result:
-            return json.load(result)
-
-    except urllib.error.HTTPError as error:
-        response_body = error.read().decode(
-            "utf-8",
-            errors="replace",
-        )
-
-        # Do not expose an unbounded response in CI.
-        response_body = response_body[:2000]
-
-        raise RuntimeError(
-            "Risk Gate HTTP request failed "
-            f"(status: {error.code}, "
-            f"response: {response_body})"
-        ) from error
+def error_result(code: str = "EXECUTION_ERROR") -> dict:
+    return {"decision": "ERROR", "reasonCodes": [code], "score": 0}
 
 
-def run_risk_gate(
-    request_body: dict,
-) -> dict:
+def run_risk_gate() -> tuple[dict, int]:
     jar = find_boot_jar()
-
-    process = subprocess.Popen(
-        [
-            "java",
-            "-jar",
-            str(jar),
-            f"--server.port={RISK_GATE_PORT}",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-    try:
-        wait_until_ready(process)
-
-        return call_risk_gate(
-            request_body
-        )
-
-    finally:
-        if process.poll() is None:
-            process.terminate()
-
-            try:
-                process.wait(
-                    timeout=10
-                )
-
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+    command = [
+        "java", "-jar", str(jar), "ci",
+        "--project", str(WORKSPACE),
+        "--base", os.environ["BASE_REF"],
+        "--report", str(BUILD_REPORT),
+        "--semgrep-report", str(SEMGREP_REPORT),
+        "--repository", os.environ["REPOSITORY"],
+        "--head-sha", os.environ["HEAD_SHA"],
+        "--pr-number", os.environ["PR_NUMBER"],
+        "--build-exit", os.environ["BUILD_EXIT"],
+        "--semgrep-exit", os.environ["SEMGREP_EXIT"],
+    ]
+    process = subprocess.run(command, cwd=WORKSPACE, capture_output=True, text=True, check=False)
+    if process.returncode in (0, 2, 3):
+        try:
+            result = json.loads(process.stdout)
+        except json.JSONDecodeError as error:
+            raise RuntimeError("Risk Gate returned no valid JSON result") from error
+        expected = {0: "PASS", 2: "REVIEW", 3: "BLOCK"}[process.returncode]
+        if not isinstance(result, dict) or result.get("decision") != expected:
+            raise RuntimeError("Risk Gate decision and exit code do not match")
+        if not isinstance(result.get("reasonCodes"), list) or not isinstance(result.get("score"), int):
+            raise RuntimeError("Risk Gate result is missing required fields")
+        return result, process.returncode
+    if process.returncode == 4:
+        return error_result(), 4
+    raise RuntimeError(f"Risk Gate process failed with exit code {process.returncode}")
 
 
 def main() -> int:
-    build_exit = int(
-        os.environ["BUILD_EXIT"]
-    )
+    build = read_json(BUILD_REPORT, "Build Convention report")
+    semgrep = read_json(SEMGREP_REPORT, "Semgrep report")
+    if build.get("status") not in ("PASS", "FAIL"):
+        raise ValueError(f"Invalid Build Convention status: {build.get('status')!r}")
+    build_exit = int(os.environ["BUILD_EXIT"])
+    if (build_exit == 0) != (build.get("status") == "PASS"):
+        raise ValueError("Build Convention exit code and report status are inconsistent")
+    if int(os.environ["SEMGREP_EXIT"]) != 0:
+        raise ValueError("Semgrep execution failed")
+    if not isinstance(semgrep.get("results"), list):
+        raise ValueError("Semgrep report does not contain a valid results array")
 
-    semgrep_exit = int(
-        os.environ["SEMGREP_EXIT"]
-    )
-
-    base_ref = os.environ[
-        "BASE_REF"
-    ]
-
-    build = read_json(
-        BUILD_REPORT,
-        "Build Convention report",
-    )
-
-    semgrep = read_json(
-        SEMGREP_REPORT,
-        "Semgrep report",
-    )
-
-    build_state = validate_build_report(
-        build,
-        build_exit,
-    )
-
-    validate_semgrep_report(
-        semgrep,
-        semgrep_exit,
-    )
-
-    changed_files = git_changes(
-        base_ref
-    )
-
-    diff = git_diff(
-        base_ref
-    )
-
-    request_body = {
-        "reportVersion": "1",
-        "repository": os.environ[
-            "REPOSITORY"
-        ],
-        "commitSha": os.environ[
-            "HEAD_SHA"
-        ],
-        "pullRequestNumber": int(
-            os.environ["PR_NUMBER"]
-        ),
-        "buildConventionReport": build,
-        "semgrepReport": semgrep,
-        "findings": [],
-        "changedFiles": changed_files,
-        "diff": diff,
-    }
-
-    response = run_risk_gate(
-        request_body
-    )
-
-    RISK_GATE_RESPONSE.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    RISK_GATE_RESPONSE.write_text(
-        json.dumps(
-            response,
-            indent=2,
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-    decision = response.get(
-        "decision"
-    )
-
-    if decision not in (
-        "PASS",
-        "REVIEW",
-        "BLOCK",
-    ):
-        raise ValueError(
-            "Invalid Risk Gate decision: "
-            f"{decision!r}"
-        )
-
-    write_summary(
-        (
-            "Human review required"
-            if decision == "REVIEW"
-            else "Assessment complete"
-        ),
-        decision=decision,
-        score=response.get("score"),
-        reasons=response.get(
-            "reasonCodes"
-        ),
-        build_state=build_state,
-        semgrep_state="PASS",
-    )
-
-    if build_state == "INCONSISTENT":
-        raise ValueError(
-            "Build Convention exit code and "
-            "report status are inconsistent"
-        )
-
-    if (
-        build_exit != 0
-        and decision != "BLOCK"
-    ):
-        raise ValueError(
-            "Build Convention failed but "
-            f"Risk Gate returned {decision}"
-        )
-
-    return (
-        1
-        if decision == "BLOCK"
-        else 0
-    )
+    result, cli_exit = run_risk_gate()
+    write_result(result)
+    decision = result["decision"]
+    write_summary("Human review required" if decision == "REVIEW" else "Assessment complete", result)
+    if decision == "BLOCK":
+        return 3
+    if decision == "ERROR":
+        return 4
+    # Existing CI treats REVIEW as human-required but non-blocking.
+    return 0
 
 
 if __name__ == "__main__":
     try:
-        sys.exit(
-            main()
-        )
-
+        sys.exit(main())
     except Exception as error:
-        error_type = type(
-            error
-        ).__name__
-
-        write_summary(
-            "Assessment failed: "
-            f"{error_type}: {error}"
-        )
-
-        print(
-            "Risk Gate failed: "
-            f"{error_type}: {error}",
-            file=sys.stderr,
-        )
-
-        traceback.print_exc(
-            file=sys.stderr,
-        )
-
-        sys.exit(1)
+        result = error_result()
+        try:
+            write_result(result)
+        except Exception:
+            pass
+        write_summary(f"Assessment failed: {type(error).__name__}", result)
+        print(f"Risk Gate failed: {type(error).__name__}: {error}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(4)
