@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from unittest.mock import patch
 
 
@@ -78,10 +80,12 @@ class ReusableWorkflowTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         jar = Path("risk-gate.jar")
-        cases = ((0, "PASS"), (2, "REVIEW"), (3, "BLOCK"))
-        for exit_code, decision in cases:
+        cases = ((0, "PASS", "main", "origin/main"),
+                 (2, "REVIEW", "release/1.0", "origin/release/1.0"),
+                 (3, "BLOCK", "origin/main", "origin/main"))
+        for exit_code, decision, base_ref, expected_base in cases:
             with self.subTest(decision=decision), patch.dict(os.environ, {
-                "BASE_REF": "main", "REPOSITORY": "owner/repo", "HEAD_SHA": "abcdef0", "PR_NUMBER": "1",
+                "BASE_REF": base_ref, "REPOSITORY": "owner/repo", "HEAD_SHA": "abcdef0", "PR_NUMBER": "1",
                 "BUILD_EXIT": "0", "SEMGREP_EXIT": "0",
             }), patch.object(module, "find_boot_jar", return_value=jar), patch.object(
                 module.subprocess, "run",
@@ -90,19 +94,40 @@ class ReusableWorkflowTests(unittest.TestCase):
             ) as run:
                 result, actual_exit = module.run_risk_gate()
                 self.assertEqual((result["decision"], actual_exit), (decision, exit_code))
-                self.assertEqual(run.call_args.args[0][:5], ["java", "-jar", str(jar), "ci", "--project"])
+                self.assertEqual(run.call_args.args[0], [
+                    "java", "-jar", str(jar), "ci", "--project", str(module.WORKSPACE),
+                    "--base", expected_base,
+                    "--report", str(module.BUILD_REPORT),
+                    "--semgrep-report", str(module.SEMGREP_REPORT),
+                    "--repository", "owner/repo", "--head-sha", "abcdef0", "--pr-number", "1",
+                    "--build-exit", "0", "--semgrep-exit", "0",
+                ])
+
+    def test_empty_base_ref_is_rejected(self):
+        spec = importlib.util.spec_from_file_location("risk_gate_empty_base_test", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with self.assertRaisesRegex(ValueError, "BASE_REF is empty"):
+            module.resolve_ci_base_ref("  ")
 
     def test_one_shot_error_contract(self):
         spec = importlib.util.spec_from_file_location("risk_gate_error_test", SCRIPT)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        stderr = StringIO()
         with patch.dict(os.environ, {
             "BASE_REF": "main", "REPOSITORY": "owner/repo", "HEAD_SHA": "abcdef0", "PR_NUMBER": "1",
             "BUILD_EXIT": "0", "SEMGREP_EXIT": "0",
         }), patch.object(module, "find_boot_jar", return_value=Path("risk-gate.jar")), patch.object(
-            module.subprocess, "run", return_value=subprocess.CompletedProcess([], 4, "", "execution error")
-        ):
+            module.subprocess, "run", return_value=subprocess.CompletedProcess(
+                [], 4, "", "CI Risk Gate failed due to invalid input or execution error: IOException\n"
+                "Authorization: Bearer sensitive-value\n" + "x" * 1000
+            )
+        ), redirect_stderr(stderr):
             self.assertEqual(module.run_risk_gate(), ({"decision": "ERROR", "reasonCodes": ["EXECUTION_ERROR"], "score": 0}, 4))
+        self.assertIn("Risk Gate child error: CI Risk Gate failed", stderr.getvalue())
+        self.assertNotIn("sensitive-value", stderr.getvalue())
+        self.assertLessEqual(len(stderr.getvalue()), 600)
 
     def test_main_preserves_results_and_maps_cli_decisions(self):
         with tempfile.TemporaryDirectory() as directory:

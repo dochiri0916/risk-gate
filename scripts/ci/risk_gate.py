@@ -4,6 +4,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import traceback
@@ -62,12 +63,38 @@ def error_result(code: str = "EXECUTION_ERROR") -> dict:
     return {"decision": "ERROR", "reasonCodes": [code], "score": 0}
 
 
+def resolve_ci_base_ref(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("BASE_REF is empty")
+    if value.startswith("origin/"):
+        return value
+    return f"origin/{value}"
+
+
+def sanitize_child_stderr(stderr: str) -> str:
+    diagnostic_prefix = "CI Risk Gate failed due to invalid input or execution error:"
+    diagnostic = next((line.strip() for line in stderr.splitlines()
+                       if line.strip().startswith(diagnostic_prefix)), "")
+    if not diagnostic:
+        return "Child process exited with an execution error."
+    summary = diagnostic
+    summary = re.sub(r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+)?\S+", r"\1[REDACTED]", summary)
+    summary = re.sub(
+        r"(?i)\b(token|api[_ -]?key|password|secret)\b(\s*[:=]\s*)\S+",
+        r"\1\2[REDACTED]", summary,
+    )
+    summary = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [REDACTED]", summary)
+    summary = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----", "[REDACTED]", summary)
+    return summary[:500]
+
+
 def run_risk_gate() -> tuple[dict, int]:
     jar = find_boot_jar()
     command = [
         "java", "-jar", str(jar), "ci",
         "--project", str(WORKSPACE),
-        "--base", os.environ["BASE_REF"],
+        "--base", resolve_ci_base_ref(os.environ["BASE_REF"]),
         "--report", str(BUILD_REPORT),
         "--semgrep-report", str(SEMGREP_REPORT),
         "--repository", os.environ["REPOSITORY"],
@@ -89,6 +116,9 @@ def run_risk_gate() -> tuple[dict, int]:
             raise RuntimeError("Risk Gate result is missing required fields")
         return result, process.returncode
     if process.returncode == 4:
+        summary = sanitize_child_stderr(process.stderr)
+        if summary:
+            print(f"Risk Gate child error: {summary}", file=sys.stderr)
         return error_result(), 4
     raise RuntimeError(f"Risk Gate process failed with exit code {process.returncode}")
 
