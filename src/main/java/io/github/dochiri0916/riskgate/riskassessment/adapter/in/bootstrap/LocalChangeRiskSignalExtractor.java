@@ -17,8 +17,9 @@ final class LocalChangeRiskSignalExtractor {
     private static final Pattern AWS_SECRET = Pattern.compile(
             "(?i)(?:aws_secret_access_key|secret_access_key)\\s*[:=]\\s*['\\\"]?[A-Za-z0-9/+=]{32,}");
     private static final Pattern SECRET_LITERAL = Pattern.compile(
-            "(?i)\\b(?:password|passwd|token|secret|api[_-]?key|client[_-]?secret)"
-                    + "\\b\\s*[:=]\\s*['\\\"][^'\\\"]{4,}['\\\"]");
+            "(?i)\\b(?:password|passwd|token|secret|api[_-]?(?:key|token)|client[_-]?secret)"
+                    + "\\b\\s*[:=]\\s*(?:['\\\"][^'\\\"]{4,}['\\\"]"
+                    + "|[A-Za-z0-9_./+=-]{8,}(?=\\s*(?:[,;#]|$)))");
     private static final Pattern DESTRUCTIVE_SQL = Pattern.compile(
             "(?i)\\b(?:DROP\\s+(?:DATABASE|TABLE)|TRUNCATE\\s+TABLE)\\b");
 
@@ -30,7 +31,7 @@ final class LocalChangeRiskSignalExtractor {
             final List<String> addedLines = addedLinesByPath.getOrDefault(path, List.of());
             final boolean secretAdded = addedLines.stream().anyMatch(LocalChangeRiskSignalExtractor::hasSecretMaterial);
             final boolean destructiveMigration = isMigration(path) && addedLines.stream()
-                    .anyMatch(line -> DESTRUCTIVE_SQL.matcher(line).find());
+                    .anyMatch(LocalChangeRiskSignalExtractor::hasDestructiveSqlOperation);
             if (secretAdded) {
                 findings.add(finding(RiskCategory.SECURITY, RiskSeverity.CRITICAL, "SECRET_MATERIAL_ADDED", path));
             } else if (destructiveMigration) {
@@ -58,6 +59,12 @@ final class LocalChangeRiskSignalExtractor {
     private static boolean hasSecretMaterial(final String line) {
         return PRIVATE_KEY.matcher(line).find() || AWS_SECRET.matcher(line).find()
                 || SECRET_LITERAL.matcher(line).find();
+    }
+
+    private static boolean hasDestructiveSqlOperation(final String line) {
+        final int commentStart = line.indexOf("--");
+        final String sql = commentStart < 0 ? line : line.substring(0, commentStart);
+        return DESTRUCTIVE_SQL.matcher(sql).find();
     }
 
     private static FindingRule highRiskRule(final String path) {

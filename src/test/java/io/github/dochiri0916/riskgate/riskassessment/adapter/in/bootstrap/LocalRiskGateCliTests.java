@@ -68,6 +68,8 @@ class LocalRiskGateCliTests {
         assertThat(exit).isZero();
         final var result = new ObjectMapper().readTree(stdout.toString(StandardCharsets.UTF_8));
         assertThat(result.path("decision").asText()).isEqualTo("PASS");
+        assertThat(result.path("score").asInt()).isZero();
+        assertThat(result.path("findings")).isEmpty();
         assertThat(result.path("semgrep").asText()).isEqualTo("NOT_RUN");
         assertThat(result.path("semgrep").asText()).isNotEqualTo("PASS");
         assertThat(stderr.size()).isZero();

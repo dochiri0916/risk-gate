@@ -142,6 +142,62 @@ class LocalChangeRiskSignalExtractorTests {
     }
 
     @Test
+    @DisplayName("실제 값이 추가된 credential과 파괴적 migration만 CRITICAL finding으로 만든다")
+    void detectsUnquotedCredentialAndDestructiveMigration() {
+        // given
+        final String credentialKey = "api_" + "token";
+        final String fixtureValue = "test_credential_value_123456";
+        final List<ChangedFile> files = List.of(
+                new ChangedFile("config/application.yml", "ADDED"),
+                new ChangedFile("migration/V4.sql", "ADDED"),
+                new ChangedFile("migration/V5.sql", "ADDED"));
+        final String patch = """
+                diff --git a/config/application.yml b/config/application.yml
+                --- /dev/null
+                +++ b/config/application.yml
+                +{credential-key}: {secret-value}
+                diff --git a/migration/V4.sql b/migration/V4.sql
+                --- /dev/null
+                +++ b/migration/V4.sql
+                +TRUNCATE TABLE sessions;
+                diff --git a/migration/V5.sql b/migration/V5.sql
+                --- /dev/null
+                +++ b/migration/V5.sql
+                +-- DROP TABLE sessions;
+                """.replace("{credential-key}", credentialKey).replace("{secret-value}", fixtureValue);
+
+        // when
+        final List<FindingInput> findings = extractor.extract(files, patch);
+
+        // then
+        assertThat(findings).extracting(FindingInput::source)
+                .containsExactly("SECRET_MATERIAL_ADDED", "DESTRUCTIVE_MIGRATION", "DATABASE_MIGRATION_CHANGE");
+        assertThat(findings.subList(0, 2)).extracting(FindingInput::severity)
+                .containsOnly(RiskSeverity.CRITICAL);
+        assertThat(findings.get(2).severity()).isEqualTo(RiskSeverity.HIGH);
+        assertThat(findings.toString()).doesNotContain(fixtureValue);
+    }
+
+    @Test
+    @DisplayName("민감한 변수명만으로 finding을 만들지 않는다")
+    void doesNotFlagSecretVariableNamesWithoutLiteralValues() {
+        // given
+        final List<ChangedFile> files = List.of(new ChangedFile("src/Config.java", "MODIFIED"));
+        final String patch = """
+                --- a/src/Config.java
+                +++ b/src/Config.java
+                -String password = \"old-value\";
+                +String password = System.getenv(\"APP_PASSWORD\");
+                """;
+
+        // when
+        final List<FindingInput> findings = extractor.extract(files, patch);
+
+        // then
+        assertThat(findings).isEmpty();
+    }
+
+    @Test
     @DisplayName("unified diff의 deleted file 표식은 경로 finding을 만들지 않는다")
     void ignoresDeletedDiffFile() {
         // given
